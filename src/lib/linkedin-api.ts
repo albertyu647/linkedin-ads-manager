@@ -9,6 +9,7 @@ import {
   CampaignTargeting 
 } from '@/types/linkedin';
 
+
 export class LinkedInAPI {
   private client: AxiosInstance;
   private accessToken: string;
@@ -19,7 +20,7 @@ export class LinkedInAPI {
       baseURL: 'https://api.linkedin.com/rest',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
-        'LinkedIn-Version': '202505', // Latest API version as of May 2025
+        'LinkedIn-Version': '202506', // Latest API version as per briefing
         'X-Restli-Protocol-Version': '2.0.0',
         'Content-Type': 'application/json'
       }
@@ -256,15 +257,48 @@ export class LinkedInAPI {
   // Get targeting entities for a facet
   async getTargetingEntities(facetUrn: string, query?: string): Promise<TargetingEntity[]> {
     try {
-      const encodedFacetUrn = encodeURIComponent(facetUrn);
-      let url = `/adTargetingEntities?q=adTargetingFacet&facet=${encodedFacetUrn}&locale=(language:en,country:US)`;
+      // First try to get from local database
+      const linkedInEntityDB = (await import('@/lib/linkedin-entity-db')).default;
       
-      if (query) {
-        url = `/adTargetingEntities?q=typeahead&facet=${encodedFacetUrn}&query=${encodeURIComponent(query)}&locale=(language:en,country:US)`;
+      if (query && query.length >= 2) {
+        // Search local database first
+        const localResults = await linkedInEntityDB.searchEntities(facetUrn, query, 50);
+        if (localResults.length > 0) {
+          console.log(`[LinkedIn API] Retrieved ${localResults.length} targeting entities from local database`);
+          return localResults;
+        }
+      } else {
+        // Get all entities for facet from local database
+        const localResults = await linkedInEntityDB.getEntitiesForFacet(facetUrn);
+        if (localResults.length > 0) {
+          console.log(`[LinkedIn API] Retrieved ${localResults.length} targeting entities from local database`);
+          return localResults;
+        }
       }
 
+      // Fallback to LinkedIn API if not in local database
+      const encodedFacetUrn = encodeURIComponent(facetUrn);
+      let url: string;
+      
+      if (query && query.length >= 2) {
+        // Use typeahead search for specific queries
+        url = `/adTargetingEntities?q=typeahead&facet=${encodedFacetUrn}&query=${encodeURIComponent(query)}&queryVersion=QUERY_USES_URNS&locale=(language:en,country:US)`;
+      } else {
+        // Use general facet listing for empty/short queries
+        url = `/adTargetingEntities?q=adTargetingFacet&facet=${encodedFacetUrn}&queryVersion=QUERY_USES_URNS&locale=(language:en,country:US)`;
+      }
+
+      console.log(`[LinkedIn API] Fetching targeting entities from LinkedIn API: ${url}`);
       const response = await this.client.get(url);
-      return response.data.elements || [];
+      
+      const entities = (response.data.elements || []).map((element: any) => ({
+        urn: element.urn || element.$URN,
+        name: element.name || `Unknown Entity`,
+        id: (element.urn || element.$URN || '').split(':').pop() || element.urn
+      }));
+      
+      console.log(`[LinkedIn API] Retrieved ${entities.length} targeting entities from LinkedIn API`);
+      return entities;
     } catch (error) {
       console.error('Error fetching targeting entities:', error);
       throw error;
@@ -304,10 +338,454 @@ export class LinkedInAPI {
     }
   }
 
-  // Batch update campaigns - fixed to preserve existing include targeting while updating exclude
+  // Get common targeting across multiple campaigns according to briefing specifications
+  async getCommonTargeting(campaignIds: string[], accountId: string): Promise<{
+    commonIncludes: Record<string, TargetingEntity[]>;
+    commonExcludes: Record<string, TargetingEntity[]>;
+  }> {
+    console.log(`[LinkedIn API] Fetching common targeting for ${campaignIds.length} campaigns`);
+
+    // Step 1: Fetch targeting criteria for each campaign individually
+    // Note: LinkedIn batch GET for campaigns requires specific parameter format
+    console.log('[LinkedIn API] Fetching targeting criteria for campaigns individually');
+    
+    const campaigns: Record<string, any> = {};
+    
+    for (const campaignId of campaignIds) {
+      const idStr = String(campaignId);
+      const cleanId = idStr.includes('urn:li:sponsoredCampaign:') 
+        ? idStr.split(':').pop() 
+        : idStr;
+      
+      if (!cleanId) continue;
+      
+      try {
+        console.log(`[LinkedIn API] Fetching targeting for campaign ${cleanId}`);
+        const singleCampaignUrl = `/adAccounts/${accountId}/adCampaigns/${cleanId}?fields=targetingCriteria`;
+        const campaignResponse = await this.client.get(singleCampaignUrl);
+        campaigns[`urn:li:sponsoredCampaign:${cleanId}`] = campaignResponse.data;
+      } catch (error) {
+        console.error(`[LinkedIn API] Failed to fetch campaign ${cleanId}:`, error);
+        // Continue with other campaigns
+             }
+     }
+     
+     console.log(`[LinkedIn API] Retrieved targeting data for ${Object.keys(campaigns).length} campaigns`);
+
+    // Step 2: Compute common audience as per briefing algorithm
+    const allCampaignTargeting: Array<{ includes: Record<string, Set<string>>, excludes: Record<string, Set<string>> }> = [];
+    
+    // Parse each campaign's targeting criteria
+    for (const [campaignUrn, campaignData] of Object.entries(campaigns)) {
+      const targetingCriteria = (campaignData as any).targetingCriteria;
+      const campaignTargeting = {
+        includes: {} as Record<string, Set<string>>,
+        excludes: {} as Record<string, Set<string>>
+      };
+      
+      // Parse includes (include.and structure)
+      if (targetingCriteria?.include?.and) {
+        for (const andGroup of targetingCriteria.include.and) {
+          if (andGroup.or) {
+            for (const [facetUrn, values] of Object.entries(andGroup.or)) {
+              if (Array.isArray(values)) {
+                if (!campaignTargeting.includes[facetUrn]) {
+                  campaignTargeting.includes[facetUrn] = new Set();
+                }
+                values.forEach(value => campaignTargeting.includes[facetUrn].add(value));
+              }
+            }
+          }
+        }
+      }
+      
+      // Parse excludes (exclude.or structure)
+      if (targetingCriteria?.exclude?.or) {
+        for (const [facetUrn, values] of Object.entries(targetingCriteria.exclude.or)) {
+          if (Array.isArray(values)) {
+            if (!campaignTargeting.excludes[facetUrn]) {
+              campaignTargeting.excludes[facetUrn] = new Set();
+            }
+            values.forEach(value => campaignTargeting.excludes[facetUrn].add(value));
+          }
+        }
+      }
+      
+      allCampaignTargeting.push(campaignTargeting);
+    }
+    
+    // Step 3: Find intersection (common criteria across all campaigns)
+    const commonIncludes: Record<string, Set<string>> = {};
+    const commonExcludes: Record<string, Set<string>> = {};
+    
+    if (allCampaignTargeting.length > 0) {
+      // Get all facets used across campaigns
+      const allIncludeFacets = new Set<string>();
+      const allExcludeFacets = new Set<string>();
+      
+      for (const targeting of allCampaignTargeting) {
+        Object.keys(targeting.includes).forEach(facet => allIncludeFacets.add(facet));
+        Object.keys(targeting.excludes).forEach(facet => allExcludeFacets.add(facet));
+      }
+      
+      // Find common includes (intersection)
+      for (const facetUrn of allIncludeFacets) {
+        // Only include if ALL campaigns have this facet
+        const allCampaignsHaveFacet = allCampaignTargeting.every(targeting => 
+          targeting.includes[facetUrn] && targeting.includes[facetUrn].size > 0
+        );
+        
+        if (allCampaignsHaveFacet) {
+          // Find intersection of values
+          let commonValues = allCampaignTargeting[0].includes[facetUrn];
+          for (let i = 1; i < allCampaignTargeting.length; i++) {
+            const intersection = new Set<string>();
+            for (const value of commonValues) {
+              if (allCampaignTargeting[i].includes[facetUrn].has(value)) {
+                intersection.add(value);
+              }
+            }
+            commonValues = intersection;
+          }
+          
+          if (commonValues.size > 0) {
+            commonIncludes[facetUrn] = commonValues;
+          }
+        }
+      }
+      
+      // Find common excludes (intersection)
+      for (const facetUrn of allExcludeFacets) {
+        // Only include if ALL campaigns have this facet
+        const allCampaignsHaveFacet = allCampaignTargeting.every(targeting => 
+          targeting.excludes[facetUrn] && targeting.excludes[facetUrn].size > 0
+        );
+        
+        if (allCampaignsHaveFacet) {
+          // Find intersection of values
+          let commonValues = allCampaignTargeting[0].excludes[facetUrn];
+          for (let i = 1; i < allCampaignTargeting.length; i++) {
+            const intersection = new Set<string>();
+            for (const value of commonValues) {
+              if (allCampaignTargeting[i].excludes[facetUrn].has(value)) {
+                intersection.add(value);
+              }
+            }
+            commonValues = intersection;
+          }
+          
+          if (commonValues.size > 0) {
+            commonExcludes[facetUrn] = commonValues;
+          }
+        }
+      }
+    }
+    
+    // Step 4: Resolve URNs to human-readable names using LinkedIn API
+    const resolvedCommonIncludes: Record<string, TargetingEntity[]> = {};
+    const resolvedCommonExcludes: Record<string, TargetingEntity[]> = {};
+    
+    // Collect all URNs for batch resolution
+    const allUrns: string[] = [];
+    for (const values of Object.values(commonIncludes)) {
+      allUrns.push(...Array.from(values));
+    }
+    for (const values of Object.values(commonExcludes)) {
+      allUrns.push(...Array.from(values));
+    }
+    
+    console.log(`[LinkedIn API] Resolving ${allUrns.length} URNs to display names`);
+    
+    // Actually resolve URNs to real display names using LinkedIn API
+    const resolvedEntityMap = await this.resolveEntityNames(allUrns);
+    
+    // Convert sets to arrays and use resolved names
+    for (const [facetUrn, values] of Object.entries(commonIncludes)) {
+      const entities: TargetingEntity[] = [];
+      for (const urn of values) {
+        const resolvedEntity = resolvedEntityMap[urn];
+        if (resolvedEntity) {
+          entities.push(resolvedEntity);
+        } else {
+          // Fallback if resolution failed
+          const id = urn.split(':').pop() || urn;
+          const entityType = this.getEntityTypeFromUrn(urn);
+          entities.push({
+            urn,
+            name: `${entityType} ${id}`,
+            id
+          });
+        }
+      }
+      resolvedCommonIncludes[this.normalizeFacetKey(facetUrn)] = entities;
+    }
+    
+    for (const [facetUrn, values] of Object.entries(commonExcludes)) {
+      const entities: TargetingEntity[] = [];
+      for (const urn of values) {
+        const resolvedEntity = resolvedEntityMap[urn];
+        if (resolvedEntity) {
+          entities.push(resolvedEntity);
+        } else {
+          // Fallback if resolution failed
+          const id = urn.split(':').pop() || urn;
+          const entityType = this.getEntityTypeFromUrn(urn);
+          entities.push({
+            urn,
+            name: `${entityType} ${id}`,
+            id
+          });
+        }
+      }
+      resolvedCommonExcludes[this.normalizeFacetKey(facetUrn)] = entities;
+    }
+    
+    console.log(`[LinkedIn API] Common targeting computed:`, {
+      includes: Object.keys(resolvedCommonIncludes).length,
+      excludes: Object.keys(resolvedCommonExcludes).length
+    });
+    
+    return {
+      commonIncludes: resolvedCommonIncludes,
+      commonExcludes: resolvedCommonExcludes
+    };
+  }
+
+  // Resolve entity URNs to human-readable names using local database first, then LinkedIn API
+  private async resolveEntityNames(urns: string[]): Promise<Record<string, TargetingEntity>> {
+    if (urns.length === 0) return {};
+    
+    console.log(`[LinkedIn API] Resolving ${urns.length} entity names`);
+    
+    const entities: Record<string, TargetingEntity> = {};
+    
+    try {
+      // First try to resolve all URNs from local database
+      const linkedInEntityDB = (await import('@/lib/linkedin-entity-db')).default;
+      const localEntities = await linkedInEntityDB.getEntitiesByUrns(urns);
+      
+      // Use local database results
+      Object.assign(entities, localEntities);
+      
+      console.log(`[LinkedIn API] Resolved ${Object.keys(localEntities).length}/${urns.length} entities from local database`);
+      
+      // Find URNs that weren't resolved locally
+      const unresolvedUrns = urns.filter(urn => !entities[urn]);
+      
+      if (unresolvedUrns.length === 0) {
+        console.log(`[LinkedIn API] All entities resolved from local database`);
+        return entities;
+      }
+      
+      console.log(`[LinkedIn API] Attempting to resolve ${unresolvedUrns.length} URNs via fallback methods`);
+      
+      // Separate title URNs from other URNs for different resolution strategies
+      const titleUrns: string[] = [];
+      const otherUrns: string[] = [];
+      
+      for (const urn of unresolvedUrns) {
+        if (urn.includes('urn:li:title:')) {
+          titleUrns.push(urn);
+        } else {
+          otherUrns.push(urn);
+        }
+      }
+    } catch (error) {
+      console.error('[LinkedIn API] Error accessing local database, falling back to LinkedIn API:', error);
+      // If database access fails, treat all URNs as unresolved
+    }
+    
+    // Determine which URNs still need resolution
+    const unresolvedUrns = urns.filter(urn => !entities[urn]);
+    const titleUrns: string[] = [];
+    const otherUrns: string[] = [];
+    
+    for (const urn of unresolvedUrns) {
+      if (urn.includes('urn:li:title:')) {
+        titleUrns.push(urn);
+      } else {
+        otherUrns.push(urn);
+      }
+    }
+    
+    // Handle title URNs with fallback names
+    if (titleUrns.length > 0) {
+      console.log(`[LinkedIn API] Creating fallback names for ${titleUrns.length} title URNs`);
+      
+      // Create fallback names for titles
+      for (const urn of titleUrns) {
+        const id = urn.split(':').pop() || urn;
+        entities[urn] = {
+          urn,
+          name: `Job Title ${id}`,
+          id
+        };
+      }
+    }
+    
+    // Handle other URNs with direct API call
+    if (otherUrns.length > 0) {
+      console.log(`[LinkedIn API] Resolving ${otherUrns.length} non-title URNs using direct API`);
+      
+      // Filter out URN types that cannot be resolved via adTargetingEntities API
+      const resolvableUrns = otherUrns.filter(urn => {
+        // Skip staff count ranges (they have complex format with parentheses)
+        if (urn.includes('urn:li:staffCountRange:')) return false;
+        // Skip ad segments (they're not resolvable via adTargetingEntities)
+        if (urn.includes('urn:li:adSegment:')) return false;
+        // Skip locale URNs (they're not standard targeting entities)
+        if (urn.includes('urn:li:locale:')) return false;
+        return true;
+      });
+      
+      console.log(`[LinkedIn API] Filtered to ${resolvableUrns.length} resolvable URNs (filtered out ${otherUrns.length - resolvableUrns.length} problematic URNs)`);
+      
+      if (resolvableUrns.length > 0) {
+        try {
+          // Use the correct /rest/ API format as per LinkedIn documentation
+          // Format: GET https://api.linkedin.com/rest/adTargetingEntities?q=urns&urns=List(...)
+          const encodedUrns = resolvableUrns.map(urn => encodeURIComponent(urn));
+          const urnsParam = `List(${encodedUrns.join(',')})`;
+          
+          const url = `/adTargetingEntities?q=urns&urns=${urnsParam}&queryVersion=QUERY_USES_URNS&locale=(language:en,country:US)`;
+          const response = await this.client.get(url);
+        
+        if (response.data.elements) {
+          for (const element of response.data.elements) {
+            entities[element.urn] = {
+              urn: element.urn,
+              name: element.name || element.title || `Entity ${element.urn.split(':').pop()}`,
+              id: element.urn.split(':').pop() || element.urn
+            };
+          }
+        }
+        
+          console.log(`[LinkedIn API] Successfully resolved ${Object.keys(entities).length - titleUrns.length} non-title entity names`);
+        } catch (error) {
+          console.error('[LinkedIn API] Error resolving non-title entity names:', error);
+          
+          // Fallback for resolvable entities only
+          for (const urn of resolvableUrns) {
+            const id = urn.split(':').pop() || urn;
+            const entityType = this.getEntityTypeFromUrn(urn);
+            entities[urn] = {
+              urn,
+              name: `${entityType} ${id}`,
+              id
+            };
+          }
+        }
+      }
+      
+      // Create fallback names for filtered out URNs
+      const filteredUrns = otherUrns.filter(urn => {
+        // Include staff count ranges, ad segments, and locale URNs that we filtered out
+        if (urn.includes('urn:li:staffCountRange:')) return true;
+        if (urn.includes('urn:li:adSegment:')) return true;
+        if (urn.includes('urn:li:locale:')) return true;
+        return false;
+      });
+      
+      for (const urn of filteredUrns) {
+        const id = urn.split(':').pop() || urn;
+        let entityType = this.getEntityTypeFromUrn(urn);
+        let name = `${entityType} ${id}`;
+        
+        // Better fallback names for special URN types
+        if (urn.includes('urn:li:staffCountRange:')) {
+          const range = id.replace(/[()]/g, ''); // Remove parentheses
+          entityType = 'Company Size';
+          name = `${range} employees`;
+        } else if (urn.includes('urn:li:adSegment:')) {
+          entityType = 'Audience Segment';
+          name = `Segment ${id}`;
+        } else if (urn.includes('urn:li:locale:')) {
+          entityType = 'Locale';
+          name = id.toUpperCase();
+        }
+        
+        entities[urn] = {
+          urn,
+          name,
+          id
+        };
+      }
+    }
+    
+    console.log(`[LinkedIn API] Total resolved entities: ${Object.keys(entities).length}/${urns.length}`);
+    return entities;
+  }
+
+  // Helper method to get entity type from URN for better fallback naming
+  private getEntityTypeFromUrn(urn: string): string {
+    if (urn.includes('urn:li:title:')) return 'Job Title';
+    if (urn.includes('urn:li:organization:')) return 'Company';
+    if (urn.includes('urn:li:seniority:')) return 'Seniority';
+    if (urn.includes('urn:li:skill:')) return 'Skill';
+    if (urn.includes('urn:li:industry:')) return 'Industry';
+    if (urn.includes('urn:li:function:')) return 'Job Function';
+    return 'Entity';
+  }
+
+  // Helper method to get facet label
+  private getFacetLabel(facetUrn: string): string {
+    const facetMap: Record<string, string> = {
+      'urn:li:adTargetingFacet:industries': 'Industry',
+      'urn:li:adTargetingFacet:jobFunctions': 'Job Function',
+      'urn:li:adTargetingFacet:titles': 'Job Title',
+      'urn:li:adTargetingFacet:employers': 'Company',
+      'urn:li:adTargetingFacet:seniorities': 'Seniority',
+      'urn:li:adTargetingFacet:skills': 'Skill'
+    };
+    return facetMap[facetUrn] || 'Unknown';
+  }
+
+  // Helper method to normalize facet URN to key
+  private normalizeFacetKey(facetUrn: string): string {
+    const keyMap: Record<string, string> = {
+      'urn:li:adTargetingFacet:industries': 'industries',
+      'urn:li:adTargetingFacet:jobFunctions': 'jobFunctions',
+      'urn:li:adTargetingFacet:titles': 'titles',
+      'urn:li:adTargetingFacet:employers': 'employers',
+      'urn:li:adTargetingFacet:seniorities': 'seniorities',
+      'urn:li:adTargetingFacet:skills': 'skills'
+    };
+    return keyMap[facetUrn] || facetUrn;
+  }
+
+  // Get audience counts for targeting criteria
+  async getAudienceCounts(targetingCriteria: any, accountId: string): Promise<number> {
+    console.log('[LinkedIn API] Getting audience counts for targeting criteria');
+    
+    try {
+      const response = await this.client.get('/audienceCounts', {
+        params: {
+          q: 'targetingCriteria',
+          account: `urn:li:sponsoredAccount:${accountId}`,
+          targetingCriteria: JSON.stringify(targetingCriteria)
+        }
+      });
+      
+      // Extract audience count from response
+      const audienceCount = response.data.elements?.[0]?.count || 0;
+      
+      console.log(`[LinkedIn API] Audience count: ${audienceCount}`);
+      return audienceCount;
+    } catch (error) {
+      console.error('[LinkedIn API] Error getting audience counts:', error);
+      // Return 0 if audience counts API fails - this is not a critical failure
+      return 0;
+    }
+  }
+
+  // Enhanced batch update campaigns with full targeting criteria support
   async batchUpdateCampaigns(
     campaignIds: string[],
-    excludedTargeting: Record<string, string[]>,
+    targetingUpdate: {
+      includes?: Record<string, string[]>;
+      excludes?: Record<string, string[]>;
+      excludedTargeting?: Record<string, string[]>; // Legacy support
+    },
     accountId: string
   ): Promise<{ 
     successful: string[]; 
@@ -319,7 +797,10 @@ export class LinkedInAPI {
     };
 
     console.log(`[LinkedIn API] Starting batch update for ${campaignIds.length} campaigns`);
-    console.log('[Excluded Targeting]', excludedTargeting);
+    console.log('[Targeting Update]', targetingUpdate);
+    
+    // Support legacy excludedTargeting parameter for backwards compatibility
+    const excludedTargeting = targetingUpdate.excludedTargeting || targetingUpdate.excludes || {};
 
     for (const campaignId of campaignIds) {
       try {
@@ -328,6 +809,10 @@ export class LinkedInAPI {
         const cleanCampaignId = campaignIdStr.includes('urn:li:sponsoredCampaign:') 
           ? campaignIdStr.split(':').pop() 
           : campaignIdStr;
+
+        if (!cleanCampaignId) {
+          throw new Error(`Invalid campaign ID: ${campaignId}`);
+        }
 
         console.log(`[LinkedIn API] Fetching current targeting for campaign ${cleanCampaignId}`);
 
@@ -443,13 +928,27 @@ export class LinkedInAPI {
         console.log(`[LinkedIn API Request] POST /adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`);
         console.log('[New Targeting Criteria]', JSON.stringify(newTargetingCriteria, null, 2));
 
-        // Use POST method with patch structure as per LinkedIn API documentation
+        // Use BATCH_PARTIAL_UPDATE method as per briefing specifications
+        const batchUpdateUrl = `/adAccounts/${accountId}/adCampaigns?ids=List(${cleanCampaignId})`;
+        const entities: Record<string, any> = {};
+        entities[cleanCampaignId] = {
+          patch: {
+            $set: {
+              targetingCriteria: newTargetingCriteria
+            }
+          }
+        };
+        
+        const batchUpdateData = {
+          entities
+        };
+
         const response = await this.client.post(
-          `/adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`,
-          patchData,
+          batchUpdateUrl,
+          batchUpdateData,
           {
             headers: {
-              'X-RestLi-Method': 'PARTIAL_UPDATE'
+              'X-RestLi-Method': 'BATCH_PARTIAL_UPDATE'
             }
           }
         );

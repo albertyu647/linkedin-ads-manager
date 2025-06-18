@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
   
   try {
     const body = await request.json();
-    const { campaignIds, excludedTargeting, accountId } = body;
+    const { campaignIds, excludedTargeting, targetingUpdate, accountId } = body;
     
     if (!campaignIds || !Array.isArray(campaignIds) || campaignIds.length === 0) {
       return NextResponse.json({ error: 'Campaign IDs are required' }, { status: 400 });
@@ -21,12 +21,13 @@ export async function POST(request: NextRequest) {
     }
     
     console.log(`[Batch Update API] Processing ${campaignIds.length} campaigns`);
-    console.log('[Excluded Targeting]', excludedTargeting);
+    console.log('[Targeting Update]', targetingUpdate || excludedTargeting);
     
     const api = new LinkedInAPI(accessToken);
     
-    // Pass excludedTargeting directly to the API method
-    const result = await api.batchUpdateCampaigns(campaignIds, excludedTargeting || {}, accountId);
+    // Support both new and legacy API formats
+    const updatePayload = targetingUpdate || { excludedTargeting };
+    const result = await api.batchUpdateCampaigns(campaignIds, updatePayload, accountId);
     
     return NextResponse.json({
       success: result.failed.length === 0,
