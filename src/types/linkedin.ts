@@ -44,6 +44,10 @@ export interface LinkedInCampaign {
   optimizationTargetType?: string;
   format?: string;
   pacingStrategy?: string;
+  spent?: {
+    amount: string;
+    currencyCode: string;
+  };
 }
 
 export interface LinkedInTargetingEntity {

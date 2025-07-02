@@ -22,7 +22,8 @@ export class LinkedInAPI {
         'Authorization': `Bearer ${accessToken}`,
         'LinkedIn-Version': '202506', // Latest API version as per briefing
         'X-Restli-Protocol-Version': '2.0.0',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'User-Agent': 'LinkedIn-Ads-Manager/1.0' // Add custom User-Agent to avoid potential blocks
       }
     });
 
@@ -144,6 +145,9 @@ export class LinkedInAPI {
         const params = new URLSearchParams();
         params.append('q', 'search');
         params.append('pageSize', '1000'); // Use maximum page size
+        // Based on LinkedIn API documentation, try the REST API endpoint format
+        // Remove fields parameter completely to get all available fields
+        // params.append('fields', 'id,name,unitCost');
         
         if (pageToken) {
           params.append('pageToken', pageToken);
@@ -196,10 +200,20 @@ export class LinkedInAPI {
       
       // Filter by status if activeOnly is requested
       if (activeOnly) {
-        filteredCampaigns = filteredCampaigns.filter(campaign => 
-          campaign.status?.toUpperCase() === 'ACTIVE'
-        );
-        console.log(`[LinkedIn API] Filtered to ${filteredCampaigns.length} active campaigns`);
+        filteredCampaigns = filteredCampaigns.filter(campaign => {
+          // Check if campaign status is ACTIVE
+          const hasActiveStatus = campaign.status?.toUpperCase() === 'ACTIVE';
+          
+          // Check if campaign is actually servable (not on hold, not stopped, etc.)
+          // servingStatuses is an array of strings - we want campaigns that are RUNNABLE
+          const isServable = campaign.servingStatuses && 
+                            Array.isArray(campaign.servingStatuses) && 
+                            campaign.servingStatuses.includes('RUNNABLE');
+          
+          // Campaign is truly "active/running" only if both conditions are met
+          return hasActiveStatus && isServable;
+        });
+        console.log(`[LinkedIn API] Filtered to ${filteredCampaigns.length} truly active campaigns (status=ACTIVE and servingStatuses includes RUNNABLE)`);
       }
       
       // Filter by search query if provided
@@ -229,17 +243,186 @@ export class LinkedInAPI {
   // Get campaign statistics
   async getCampaignStats(campaignIds: string[], dateRange?: { start: string; end: string }): Promise<CampaignStats[]> {
     try {
-      const campaigns = campaignIds.map(id => `urn:li:sponsoredCampaign:${id}`).join(',');
-      const startDate = dateRange?.start || this.getDateString(30); // Last 30 days by default
+      // If too many campaigns, split into smaller batches to avoid 500 errors
+      if (campaignIds.length > 10) {
+        console.log(`[LinkedIn API] Splitting ${campaignIds.length} campaigns into batches of 10`);
+        const allStats: CampaignStats[] = [];
+        
+        for (let i = 0; i < campaignIds.length; i += 10) {
+          const batch = campaignIds.slice(i, i + 10);
+          const batchStats = await this.getCampaignStats(batch, dateRange);
+          allStats.push(...batchStats);
+        }
+        
+        return allStats;
+      }
+      
+      // Format dates correctly using LinkedIn's nested tuple format from guidance
+      const startDate = dateRange?.start || this.getDateString(30);
       const endDate = dateRange?.end || this.getDateString(0);
 
-      const response = await this.client.get(
-        `/adAnalytics?campaigns=List(${campaigns})&dateRange.start.day=${startDate.split('-')[2]}&dateRange.start.month=${startDate.split('-')[1]}&dateRange.start.year=${startDate.split('-')[0]}&dateRange.end.day=${endDate.split('-')[2]}&dateRange.end.month=${endDate.split('-')[1]}&dateRange.end.year=${endDate.split('-')[0]}&fields=impressions,clicks,costInUsd`
-      );
+      const startDateObj = new Date(startDate);
+      const endDateObj = new Date(endDate);
+      
+      // Build the dateRange parameter using LinkedIn's exact format from guidance
+      const dateRangeParam = `(start:(year:${startDateObj.getFullYear()},month:${startDateObj.getMonth() + 1},day:${startDateObj.getDate()}),end:(year:${endDateObj.getFullYear()},month:${endDateObj.getMonth() + 1},day:${endDateObj.getDate()}))`;
+      
+      // Format campaign URNs correctly
+      const campaignUrns = campaignIds.map(id => `urn:li:sponsoredCampaign:${id}`);
+      
+      const params = new URLSearchParams();
+      params.append('q', 'analytics'); // Try q=analytics first, then statistics if needed
+      params.append('timeGranularity', 'ALL'); // Use ALL for aggregated data
+      params.append('dateRange', dateRangeParam);
+      params.append('pivot', 'CAMPAIGN'); // Use singular pivot instead of pivots
+      params.append('campaigns', `List(${campaignUrns.join(',')})`);
+      // Don't specify fields - let LinkedIn return all available fields to see what's actually available
+      // params.append('fields', 'costInLocalCurrency,costInUsd');
+
+      const url = `/adAnalytics?${params.toString()}`;
+      console.log('[LinkedIn API Analytics Request] GET', url);
+      
+      const response = await this.client.get(url);
+      
+      console.log('[LinkedIn API Analytics Response]', response.status, response.data?.elements?.length || 0, 'elements');
       return response.data.elements || [];
-    } catch (error) {
-      console.error('Error fetching campaign stats:', error);
-      throw error;
+    } catch (error: any) {
+      console.error('[LinkedIn API Analytics Error]:', error.response?.data || error.message);
+      // Return empty array instead of throwing to avoid breaking the UI
+      return [];
+    }
+  }
+
+  // Get campaign spend data using the correct LinkedIn API format from documentation
+  async fetchCampaignSpendData(campaignIds: string[], accountId: string, startDate: string, endDate: string): Promise<{ [campaignId: string]: number }> {
+    try {
+      console.log('[LinkedIn API] Fetching spend data for account:', accountId);
+      console.log('[LinkedIn API] Date range:', startDate, 'to', endDate);
+      
+      // Format dates correctly using LinkedIn's nested tuple format
+      // IMPORTANT: Use UTC to avoid timezone shifts that can change the day
+      const startDateObj = new Date(startDate + 'T00:00:00.000Z');
+      const endDateObj = new Date(endDate + 'T00:00:00.000Z');
+      
+      console.log('[LinkedIn API] Date parsing debug:', {
+        inputStart: startDate,
+        inputEnd: endDate,
+        parsedStartDay: startDateObj.getUTCDate(),
+        parsedEndDay: endDateObj.getUTCDate(),
+        startDateObj: startDateObj.toISOString(),
+        endDateObj: endDateObj.toISOString()
+      });
+      
+      // Build the dateRange parameter using LinkedIn's exact format that works in Postman
+      const dateRangeParam = `(start:(day:${startDateObj.getUTCDate()},month:${startDateObj.getUTCMonth() + 1},year:${startDateObj.getUTCFullYear()}),end:(day:${endDateObj.getUTCDate()},month:${endDateObj.getUTCMonth() + 1},year:${endDateObj.getUTCFullYear()}))`;
+      
+      // Build URL manually - only encode the URN part, not the dateRange structure
+      // LinkedIn expects the dateRange parentheses and colons to be literal, not encoded
+      const encodedAccounts = `List(urn%3Ali%3AsponsoredAccount%3A${accountId})`;
+      
+      const url = `/adAnalytics?q=statistics&dateRange=${dateRangeParam}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,pivotValues`;
+      console.log('[LinkedIn API Analytics Request] GET', url);
+      console.log('[LinkedIn API] Decoded URL for comparison:', decodeURIComponent(url));
+      
+      const response = await this.client.get(url);
+      console.log('[LinkedIn API Analytics Response]', response.status, response.data?.elements?.length || 0, 'elements');
+      
+      const spendData: { [campaignId: string]: number } = {};
+      
+      // Process the response using the correct LinkedIn API format from documentation
+      if (response.data.elements && Array.isArray(response.data.elements)) {
+        response.data.elements.forEach((element: any) => {
+          console.log('[LinkedIn API] Processing element:', JSON.stringify(element, null, 2));
+          
+          const costInLocalCurrency = element.costInLocalCurrency;
+          const pivotValues = element.pivotValues;
+          
+          if (pivotValues && Array.isArray(pivotValues) && costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+            // With CREATIVE+CAMPAIGN pivots, pivotValues contains [creative_urn, campaign_urn]
+            // Find the campaign URN (should be second element based on your Postman response)
+            const campaignUrn = pivotValues.find((pv: string) => 
+              typeof pv === 'string' && pv.includes('urn:li:sponsoredCampaign:')
+            );
+            
+            if (campaignUrn) {
+              // Extract campaign ID from URN (e.g., "urn:li:sponsoredCampaign:100000000" -> "100000000")
+              const campaignId = campaignUrn.split(':').pop();
+              if (campaignId) {
+                // Convert cost to number and aggregate (since we have multiple creatives per campaign)
+                const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
+                if (!isNaN(spendAmount)) {
+                  spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
+                  console.log('[LinkedIn API] Added spend for campaign', campaignId, ':', spendAmount, 'Total:', spendData[campaignId]);
+                }
+              }
+            }
+          }
+        });
+      }
+      
+      console.log('[LinkedIn API] Final processed spend data:', spendData);
+      return spendData;
+    } catch (error: any) {
+      console.error('[LinkedIn API] Error fetching spend data:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message,
+        url: error.config?.url,
+        headers: error.config?.headers
+      });
+      
+      // If it's a 400 or 500 error, try with a simpler date range
+      if (error.response?.status === 400 || error.response?.status === 500) {
+        console.log('[LinkedIn API] Retrying with a different date range...');
+        try {
+          // Try with just the last few days using UTC to avoid timezone issues
+          const today = new Date();
+          const threeDaysAgo = new Date(today);
+          threeDaysAgo.setUTCDate(today.getUTCDate() - 3);
+          
+          const simpleDateRange = `(start:(day:${threeDaysAgo.getUTCDate()},month:${threeDaysAgo.getUTCMonth() + 1},year:${threeDaysAgo.getUTCFullYear()}),end:(day:${today.getUTCDate()},month:${today.getUTCMonth() + 1},year:${today.getUTCFullYear()}))`;
+          console.log('[LinkedIn API] Retry date range:', simpleDateRange);
+          const encodedAccounts = `List(urn%3Ali%3AsponsoredAccount%3A${accountId})`;
+          
+          const retryUrl = `/adAnalytics?q=statistics&dateRange=${simpleDateRange}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,pivotValues`;
+          console.log('[LinkedIn API] Retry URL:', retryUrl);
+          
+          const retryResponse = await this.client.get(retryUrl);
+          console.log('[LinkedIn API] Retry successful!', retryResponse.status);
+          
+          // Process the retry response the same way
+          const spendData: { [campaignId: string]: number } = {};
+          if (retryResponse.data.elements && Array.isArray(retryResponse.data.elements)) {
+            retryResponse.data.elements.forEach((element: any) => {
+              const costInLocalCurrency = element.costInLocalCurrency;
+              const pivotValues = element.pivotValues;
+              
+              if (pivotValues && Array.isArray(pivotValues) && costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+                const campaignUrn = pivotValues.find((pv: string) => 
+                  typeof pv === 'string' && pv.includes('urn:li:sponsoredCampaign:')
+                );
+                
+                if (campaignUrn) {
+                  const campaignId = campaignUrn.split(':').pop();
+                  if (campaignId) {
+                    const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
+                    if (!isNaN(spendAmount)) {
+                      spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
+                    }
+                  }
+                }
+              }
+            });
+          }
+          return spendData;
+        } catch (retryError) {
+          console.error('[LinkedIn API] Retry also failed:', retryError);
+        }
+      }
+      
+      // Return empty spend data to avoid breaking the UI
+      return {};
     }
   }
 
@@ -1034,5 +1217,119 @@ export class LinkedInAPI {
       console.error('Error exchanging code for token:', error);
       throw error;
     }
+  }
+
+  // Bulk update campaign bids - increment all campaign bids by a specified amount
+  async batchUpdateCampaignBids(
+    campaignIds: string[],
+    bidAdjustment: number, // Amount to increment bids by (can be negative to decrease)
+    accountId: string
+  ): Promise<{ 
+    successful: string[]; 
+    failed: Array<{ campaignId: string; error: string }> 
+  }> {
+    const successful: string[] = [];
+    const failed: Array<{ campaignId: string; error: string }> = [];
+
+    console.log(`[LinkedIn API] Updating bids for ${campaignIds.length} campaigns with adjustment: ${bidAdjustment}`);
+
+    // Get all campaigns from the account first to verify which ones exist
+    let allCampaigns: any[] = [];
+    try {
+      allCampaigns = await this.getCampaigns(accountId, { getAllPages: false });
+      console.log(`[LinkedIn API] Retrieved ${allCampaigns.length} campaigns from account ${accountId}`);
+    } catch (error: any) {
+      console.error(`[LinkedIn API] Failed to get campaigns from account ${accountId}:`, error.message);
+      return { successful: [], failed: campaignIds.map(id => ({ campaignId: id, error: 'Failed to retrieve campaigns from account' })) };
+    }
+
+    // Verify which campaigns exist and get their current data
+    const validCampaignData: Array<{ id: string; campaign: any }> = [];
+    for (const campaignId of campaignIds) {
+      const cleanId = String(campaignId).includes('urn:li:sponsoredCampaign:') 
+        ? String(campaignId).split(':').pop() 
+        : String(campaignId);
+
+      if (!cleanId) {
+        failed.push({ campaignId, error: 'Invalid campaign ID format' });
+        continue;
+      }
+
+      // Find the campaign in the retrieved campaigns
+      const campaign = allCampaigns.find(c => 
+        c.id === cleanId || 
+        c.id === parseInt(cleanId) || 
+        c.id === `urn:li:sponsoredCampaign:${cleanId}`
+      );
+
+      if (campaign) {
+        validCampaignData.push({ id: cleanId, campaign });
+        console.log(`[LinkedIn API] Found campaign ${cleanId} with current bid:`, campaign.unitCost);
+      } else {
+        failed.push({ campaignId: cleanId, error: `Campaign ${cleanId} not found in account ${accountId}` });
+        console.log(`[LinkedIn API] Campaign ${cleanId} not found in account ${accountId}`);
+      }
+    }
+
+    // Now update the valid campaigns using the reliable pattern from guidance
+    for (const { id: cleanId, campaign: currentCampaign } of validCampaignData) {
+      try {
+        // Check if campaign has a bid that can be updated
+        if (!currentCampaign.unitCost) {
+          failed.push({ campaignId: cleanId, error: 'Campaign has no existing bid (unitCost)' });
+          continue;
+        }
+
+        const currentBid = parseFloat(currentCampaign.unitCost.amount);
+        const newBid = Math.max(0.01, currentBid + bidAdjustment); // Ensure minimum bid of $0.01
+        
+        // Use the reliable pattern from guidance - ensure account ID and campaign ID match
+        const updateData = {
+          patch: {
+            $set: {
+              unitCost: {
+                amount: newBid.toFixed(2),
+                currencyCode: currentCampaign.unitCost.currencyCode
+              }
+            }
+          }
+        };
+
+        console.log(`[LinkedIn API] Updating campaign ${cleanId} bid from ${currentBid} to ${newBid}`);
+        console.log(`[LinkedIn API] Using URL: POST /adAccounts/${accountId}/adCampaigns/${cleanId}`);
+        console.log(`[LinkedIn API] Current campaign optimization:`, currentCampaign.optimizationTargetType);
+
+        const response = await this.client.post(
+          `/adAccounts/${accountId}/adCampaigns/${cleanId}`,
+          updateData,
+          {
+            headers: {
+              'X-RestLi-Method': 'PARTIAL_UPDATE',
+              'LinkedIn-Version': '202506',
+              'X-Restli-Protocol-Version': '2.0.0'
+            }
+          }
+        );
+
+        if (response.status === 204 || response.status === 200) {
+          successful.push(cleanId);
+          console.log(`[LinkedIn API] Successfully updated bid for campaign ${cleanId}: ${currentBid} -> ${newBid}`);
+        } else {
+          failed.push({ campaignId: cleanId, error: `Update failed with status ${response.status}` });
+        }
+      } catch (error: any) {
+        console.error(`[LinkedIn API] Error updating bid for campaign ${cleanId}:`, error);
+        console.error(`[LinkedIn API] Error details:`, error.response?.data || error.message);
+        console.error(`[LinkedIn API] Error status:`, error.response?.status);
+        console.error(`[LinkedIn API] Error headers:`, error.response?.headers);
+        failed.push({ 
+          campaignId: cleanId, 
+          error: error.response?.data?.message || error.message || 'Unknown error' 
+        });
+      }
+    }
+
+    console.log(`[LinkedIn API] Bid update completed. Successful: ${successful.length}, Failed: ${failed.length}`);
+    return { successful, failed };
   }
 } 

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useMemo } from 'react';
 import { LinkedInCampaign } from '@/types/linkedin';
 
 interface CampaignListProps {
@@ -10,6 +11,9 @@ interface CampaignListProps {
   loading: boolean;
 }
 
+type SortField = 'name' | 'status' | 'dailyBudget' | 'unitCost' | 'spent';
+type SortDirection = 'asc' | 'desc';
+
 export default function CampaignList({
   campaigns,
   selectedCampaigns,
@@ -17,11 +21,104 @@ export default function CampaignList({
   onSelectAll,
   loading
 }: CampaignListProps) {
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString();
+  const [sortField, setSortField] = useState<SortField>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
   };
 
-  const getStatusColor = (status: string) => {
+  const handleSelectNoSpend = () => {
+    const noSpendCampaignIds = sortedCampaigns
+      .filter(campaign => {
+        // Check if spent is N/A (undefined/null) or 0
+        if (!campaign.spent || !campaign.spent.amount) return true;
+        const spentAmount = parseFloat(campaign.spent.amount);
+        return spentAmount === 0;
+      })
+      .map(campaign => campaign.id)
+      .filter((id): id is string => id !== undefined);
+    
+    // Add these campaigns to the current selection (don't replace)
+    const newSelection = [...new Set([...selectedCampaigns, ...noSpendCampaignIds])];
+    newSelection.forEach(campaignId => onCampaignSelection(campaignId, true));
+  };
+
+  const getNoSpendCount = () => {
+    return sortedCampaigns.filter(campaign => {
+      if (!campaign.spent || !campaign.spent.amount) return true;
+      const spentAmount = parseFloat(campaign.spent.amount);
+      return spentAmount === 0;
+    }).length;
+  };
+
+  const sortedCampaigns = useMemo(() => {
+    return [...campaigns].sort((a, b) => {
+      let aValue: any;
+      let bValue: any;
+
+      switch (sortField) {
+        case 'name':
+          aValue = a.name?.toLowerCase() || '';
+          bValue = b.name?.toLowerCase() || '';
+          break;
+        case 'status':
+          aValue = a.status || '';
+          bValue = b.status || '';
+          break;
+        case 'dailyBudget':
+          aValue = parseFloat(a.dailyBudget?.amount || '0');
+          bValue = parseFloat(b.dailyBudget?.amount || '0');
+          break;
+        case 'unitCost':
+          aValue = parseFloat(a.unitCost?.amount || '0');
+          bValue = parseFloat(b.unitCost?.amount || '0');
+          break;
+        case 'spent':
+          aValue = parseFloat(a.spent?.amount || '0');
+          bValue = parseFloat(b.spent?.amount || '0');
+          break;
+        default:
+          return 0;
+      }
+
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [campaigns, sortField, sortDirection]);
+
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return (
+        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+        </svg>
+      );
+    }
+    
+    if (sortDirection === 'asc') {
+      return (
+        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      );
+    }
+  };
+
+  const getStatusColor = (status?: string) => {
+    if (!status) return 'bg-gray-100 text-gray-800';
     switch (status) {
       case 'ACTIVE':
         return 'bg-green-100 text-green-800';
@@ -41,12 +138,22 @@ export default function CampaignList({
   };
 
   const formatBudget = (budget?: { amount: string; currencyCode: string }) => {
-    if (!budget) return 'N/A';
+    if (!budget || !budget.amount) return 'N/A';
     return `${budget.currencyCode} ${parseFloat(budget.amount).toLocaleString()}`;
   };
 
-  const isAllSelected = campaigns.length > 0 && selectedCampaigns.length === campaigns.length;
-  const isIndeterminate = selectedCampaigns.length > 0 && selectedCampaigns.length < campaigns.length;
+  const formatBid = (bid?: { amount: string; currencyCode: string }) => {
+    if (!bid || !bid.amount) return 'N/A';
+    return `${bid.currencyCode} ${parseFloat(bid.amount).toFixed(2)}`;
+  };
+
+  const formatSpent = (spent?: { amount: string; currencyCode: string }) => {
+    if (!spent || !spent.amount) return 'N/A';
+    return `${spent.currencyCode} ${parseFloat(spent.amount).toFixed(2)}`;
+  };
+
+  const isAllSelected = sortedCampaigns.length > 0 && selectedCampaigns.length === sortedCampaigns.length;
+  const isIndeterminate = selectedCampaigns.length > 0 && selectedCampaigns.length < sortedCampaigns.length;
 
   if (loading) {
     return (
@@ -87,21 +194,35 @@ export default function CampaignList({
       <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
         <div className="flex items-center justify-between">
           <h3 className="text-lg leading-6 font-medium text-gray-900">
-            Campaigns ({campaigns.length})
+            Campaigns ({sortedCampaigns.length})
           </h3>
-          <div className="flex items-center">
-            <input
-              type="checkbox"
-              checked={isAllSelected}
-              ref={(input) => {
-                if (input) input.indeterminate = isIndeterminate;
-              }}
-              onChange={(e) => onSelectAll(e.target.checked)}
-              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-            />
-            <label className="ml-2 text-sm text-gray-600">
-              Select All
-            </label>
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                checked={isAllSelected}
+                ref={(input) => {
+                  if (input) input.indeterminate = isIndeterminate;
+                }}
+                onChange={(e) => onSelectAll(e.target.checked)}
+                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+              />
+              <label className="ml-2 text-sm text-gray-600">
+                Select All
+              </label>
+            </div>
+            
+            {getNoSpendCount() > 0 && (
+              <button
+                onClick={handleSelectNoSpend}
+                className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                <svg className="w-4 h-4 mr-1 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                </svg>
+                Select No Spend ({getNoSpendCount()})
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -113,39 +234,71 @@ export default function CampaignList({
               <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Select
               </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Campaign
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={() => handleSort('name')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Campaign</span>
+                  {getSortIcon('name')}
+                </div>
               </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Status
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={() => handleSort('status')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Status</span>
+                  {getSortIcon('status')}
+                </div>
               </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Type
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={() => handleSort('dailyBudget')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Daily Budget</span>
+                  {getSortIcon('dailyBudget')}
+                </div>
               </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Cost Type
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={() => handleSort('unitCost')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Bid Amount</span>
+                  {getSortIcon('unitCost')}
+                </div>
               </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Daily Budget
-              </th>
-              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Created
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                onClick={() => handleSort('spent')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Spent</span>
+                  {getSortIcon('spent')}
+                </div>
               </th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {campaigns.map((campaign) => (
+            {sortedCampaigns.map((campaign) => (
               <tr 
-                key={campaign.id}
+                key={campaign.id || 'unknown'}
                 className={`hover:bg-gray-50 ${
-                  selectedCampaigns.includes(campaign.id) ? 'bg-blue-50' : ''
+                  campaign.id && selectedCampaigns.includes(campaign.id) ? 'bg-blue-50' : ''
                 }`}
               >
                 <td className="px-6 py-4 whitespace-nowrap">
                   <input
                     type="checkbox"
-                    checked={selectedCampaigns.includes(campaign.id)}
-                    onChange={(e) => onCampaignSelection(campaign.id, e.target.checked)}
+                    checked={campaign.id ? selectedCampaigns.includes(campaign.id) : false}
+                    onChange={(e) => campaign.id && onCampaignSelection(campaign.id, e.target.checked)}
                     className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                   />
                 </td>
@@ -163,16 +316,13 @@ export default function CampaignList({
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {campaign.type?.replace('_', ' ')}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {campaign.costType}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {formatBudget(campaign.dailyBudget)}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {formatDate(campaign.createdAt)}
+                  {formatBid(campaign.unitCost)}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {formatSpent(campaign.spent)}
                 </td>
               </tr>
             ))}

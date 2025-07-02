@@ -4,6 +4,9 @@ import { useState, useEffect } from 'react';
 import { LinkedInCampaign, LinkedInAccount } from '@/types/linkedin';
 import CampaignList from '@/components/CampaignList';
 import BatchUpdateModal from '@/components/BatchUpdateModal';
+import BulkBidAdjustmentModal from '@/components/BulkBidAdjustmentModal';
+import DateRangeFilter from '@/components/DateRangeFilter';
+import { DateRange, getDefaultDateRange } from '@/lib/date-ranges';
 import DatabaseManager from '@/components/DatabaseManager';
 
 export default function Dashboard() {
@@ -14,9 +17,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showBatchUpdate, setShowBatchUpdate] = useState(false);
+  const [showBulkBidAdjustment, setShowBulkBidAdjustment] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [activeOnly, setActiveOnly] = useState<boolean>(false);
+  const [activeOnly, setActiveOnly] = useState<boolean>(true); // Default to active campaigns only
   const [activeTab, setActiveTab] = useState<'campaigns' | 'database'>('campaigns');
+  const [dateRange, setDateRange] = useState<DateRange>(getDefaultDateRange());
 
   // Fetch accounts on component mount
   useEffect(() => {
@@ -28,7 +33,7 @@ export default function Dashboard() {
     if (selectedAccount) {
       fetchCampaigns(selectedAccount);
     }
-  }, [selectedAccount, searchQuery, activeOnly]);
+  }, [selectedAccount, searchQuery, activeOnly, dateRange]);
 
   const fetchAccounts = async () => {
     try {
@@ -60,14 +65,51 @@ export default function Dashboard() {
   const fetchCampaigns = async (accountId: string) => {
     try {
       setLoading(true);
-              const response = await fetch(`/api/campaigns?accountId=${accountId}&search=${encodeURIComponent(searchQuery)}&activeOnly=${activeOnly}`);
+      const response = await fetch(`/api/campaigns?accountId=${accountId}&search=${encodeURIComponent(searchQuery)}&activeOnly=${activeOnly}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch campaigns');
       }
       
       const data = await response.json();
-      setCampaigns(data.campaigns);
+      const campaigns = data.campaigns;
+      
+      // Fetch spend data for all campaigns if we have campaigns
+      if (campaigns.length > 0) {
+        try {
+          const campaignIds = campaigns.map((c: any) => c.id).filter(Boolean);
+          if (campaignIds.length > 0) {
+            const spendResponse = await fetch(
+              `/api/campaigns/spend?accountId=${accountId}&campaignIds=${campaignIds.join(',')}&startDate=${dateRange.start}&endDate=${dateRange.end}`
+            );
+            
+            if (spendResponse.ok) {
+              const spendData = await spendResponse.json();
+              console.log('[Dashboard] Received spend data:', spendData);
+              
+              // Merge spend data with campaigns
+              campaigns.forEach((campaign: any) => {
+                if (campaign.id && spendData.spendData && spendData.spendData[campaign.id] !== undefined) {
+                  // spendData.spendData[campaign.id] is now a number
+                  const spendAmount = spendData.spendData[campaign.id];
+                  if (typeof spendAmount === 'number' && spendAmount > 0) {
+                    campaign.spent = {
+                      amount: spendAmount.toString(),
+                      currencyCode: campaign.dailyBudget?.currencyCode || 'USD' // Use campaign currency or default to USD
+                    };
+                    console.log('[Dashboard] Set spend for campaign', campaign.id, ':', campaign.spent);
+                  }
+                }
+              });
+            }
+          }
+        } catch (spendError) {
+          console.error('Failed to fetch spend data:', spendError);
+          // Continue without spend data rather than failing completely
+        }
+      }
+      
+      setCampaigns(campaigns);
       setSelectedCampaigns([]); // Clear selection when switching accounts
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch campaigns');
@@ -100,6 +142,14 @@ export default function Dashboard() {
     setShowBatchUpdate(true);
   };
 
+  const handleBulkBidAdjustment = () => {
+    if (selectedCampaigns.length === 0) {
+      alert('Please select at least one campaign to adjust bids.');
+      return;
+    }
+    setShowBulkBidAdjustment(true);
+  };
+
   const handleBatchUpdateComplete = () => {
     setShowBatchUpdate(false);
     setSelectedCampaigns([]);
@@ -109,8 +159,29 @@ export default function Dashboard() {
     }
   };
 
+  const handleBulkBidAdjustmentComplete = () => {
+    setShowBulkBidAdjustment(false);
+    setSelectedCampaigns([]);
+    // Refresh campaigns to show updated data
+    if (selectedAccount) {
+      fetchCampaigns(selectedAccount);
+    }
+  };
+
   const getRunningCampaignsCount = () => {
-    return campaigns.filter(c => c.status === 'ACTIVE').length;
+    return campaigns.filter(c => {
+      // Check if campaign status is ACTIVE
+      const hasActiveStatus = c.status?.toUpperCase() === 'ACTIVE';
+      
+      // Check if campaign is actually servable (not on hold, not stopped, etc.)
+      // servingStatuses is an array of strings - we want campaigns that are RUNNABLE
+      const isServable = c.servingStatuses && 
+                        Array.isArray(c.servingStatuses) && 
+                        c.servingStatuses.includes('RUNNABLE');
+      
+      // Campaign is truly "active/running" only if both conditions are met
+      return hasActiveStatus && isServable;
+    }).length;
   };
 
   if (loading && accounts.length === 0) {
@@ -232,6 +303,12 @@ export default function Dashboard() {
         {/* Campaigns Tab */}
         {activeTab === 'campaigns' && selectedAccount && (
           <>
+            {/* Date Range Filter */}
+            <DateRangeFilter
+              selectedRange={dateRange}
+              onDateRangeChange={setDateRange}
+            />
+
             {/* Search and Filter Controls */}
             <div className="bg-white shadow rounded-lg mb-6">
               <div className="px-4 py-5 sm:px-6">
@@ -344,6 +421,16 @@ export default function Dashboard() {
                   </svg>
                   Batch Update ({selectedCampaigns.length})
                 </button>
+                <button
+                  onClick={handleBulkBidAdjustment}
+                  disabled={selectedCampaigns.length === 0}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  Bulk Bid Adjustment ({selectedCampaigns.length})
+                </button>
               </div>
 
               <button
@@ -391,6 +478,17 @@ export default function Dashboard() {
           onComplete={handleBatchUpdateComplete}
         />
       )}
+
+             {/* Bulk Bid Adjustment Modal */}
+       {showBulkBidAdjustment && (
+         <BulkBidAdjustmentModal
+           isOpen={showBulkBidAdjustment}
+           selectedCampaigns={selectedCampaigns}
+           accountId={selectedAccount}
+           onClose={() => setShowBulkBidAdjustment(false)}
+           onSuccess={handleBulkBidAdjustmentComplete}
+         />
+       )}
     </div>
   );
 } 
