@@ -44,9 +44,13 @@ export default function CampaignList({
       .map(campaign => campaign.id)
       .filter((id): id is string => id !== undefined);
     
-    // Add these campaigns to the current selection (don't replace)
-    const newSelection = [...new Set([...selectedCampaigns, ...noSpendCampaignIds])];
-    newSelection.forEach(campaignId => onCampaignSelection(campaignId, true));
+    // Only select campaigns that are NOT already selected
+    const campaignsToSelect = noSpendCampaignIds.filter(campaignId => 
+      !selectedCampaigns.includes(campaignId)
+    );
+    
+    // Call onCampaignSelection only for campaigns that need to be selected
+    campaignsToSelect.forEach(campaignId => onCampaignSelection(campaignId, true));
   };
 
   const getNoSpendCount = () => {
