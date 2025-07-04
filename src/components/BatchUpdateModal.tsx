@@ -24,6 +24,18 @@ interface SelectedTargeting {
   skills: TargetingEntity[];
 }
 
+interface UpdateResult {
+  success: boolean;
+  message: string;
+}
+
+interface CampaignProgress {
+  id: string;
+  name?: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  error?: string;
+}
+
 const TARGETING_FACETS = {
   industries: { urn: 'urn:li:adTargetingFacet:industries', label: 'Industries' },
   jobFunctions: { urn: 'urn:li:adTargetingFacet:jobFunctions', label: 'Job Functions' },
@@ -57,12 +69,27 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updateComplete, setUpdateComplete] = useState(false);
-  const [updateResults, setUpdateResults] = useState<{ success: boolean; message: string } | null>(null);
+  const [updateResults, setUpdateResults] = useState<UpdateResult | null>(null);
+  const [campaignProgress, setCampaignProgress] = useState<CampaignProgress[]>([]);
+  const [showProgress, setShowProgress] = useState(false);
 
   // Load common targeting on component mount
   useEffect(() => {
     fetchCommonTargeting();
   }, []);
+
+  // Initialize progress tracking when campaigns are selected
+  useEffect(() => {
+    if (campaignIds.length > 0) {
+      setCampaignProgress(
+        campaignIds.map(id => ({
+          id,
+          name: `Campaign ${id}`,
+          status: 'pending'
+        }))
+      );
+    }
+  }, [campaignIds]);
 
   const fetchCommonTargeting = async () => {
     try {
@@ -168,9 +195,20 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
     }));
   };
 
+  const updateCampaignStatus = (campaignId: string, status: CampaignProgress['status'], error?: string) => {
+    setCampaignProgress(prev => 
+      prev.map(campaign => 
+        campaign.id === campaignId 
+          ? { ...campaign, status, error }
+          : campaign
+      )
+    );
+  };
+
   const handleSubmit = async () => {
     try {
       setUpdating(true);
+      setShowProgress(true);
       setError(null);
 
       // Convert targeting to URN arrays
@@ -189,38 +227,63 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
         }
       });
 
-      const response = await fetch('/api/campaigns/batch-update', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          campaignIds,
-          accountId,
-          targetingUpdate: {
-            includes: includesUrns,
-            excludes: excludesUrns
+      // Process campaigns individually with progress tracking
+      const results: { 
+        successful: string[], 
+        failed: Array<{ campaignId: string; error: string }> 
+      } = { successful: [], failed: [] };
+
+      for (const campaignId of campaignIds) {
+        updateCampaignStatus(campaignId, 'processing');
+        
+        try {
+          const response = await fetch('/api/campaigns/batch-update', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              campaignIds: [campaignId], // Process one at a time
+              accountId,
+              targetingUpdate: {
+                includes: includesUrns,
+                excludes: excludesUrns
+              }
+            }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to update campaign');
           }
-        }),
-      });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to update campaigns');
+          if (data.success) {
+            updateCampaignStatus(campaignId, 'completed');
+            results.successful.push(campaignId);
+          } else {
+            updateCampaignStatus(campaignId, 'failed', data.message || 'Update failed');
+            results.failed.push({ campaignId, error: data.message || 'Update failed' });
+          }
+        } catch (error: any) {
+          updateCampaignStatus(campaignId, 'failed', error.message);
+          results.failed.push({ campaignId, error: error.message });
+        }
+        
+        // Small delay to show progress
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
-      if (data.success) {
-        setUpdateComplete(true);
-        setUpdateResults({ 
-          success: true, 
-          message: `Successfully updated ${campaignIds.length} campaigns with new targeting.` 
-        });
-      } else {
-        setUpdateComplete(true);
+      setUpdateComplete(true);
+      if (results.failed.length > 0) {
         setUpdateResults({ 
           success: false, 
-          message: data.errors?.join(', ') || 'Some campaigns failed to update' 
+          message: `Updated ${results.successful.length} campaigns successfully. ${results.failed.length} failed.` 
+        });
+      } else {
+        setUpdateResults({ 
+          success: true, 
+          message: `Successfully updated ${results.successful.length} campaigns with new targeting.` 
         });
       }
     } catch (err) {
@@ -243,6 +306,41 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       onComplete(); // Refresh dashboard only on successful update
     }
     onClose();
+  };
+
+  const resetModal = () => {
+    setShowProgress(false);
+    setUpdateComplete(false);
+    setUpdateResults(null);
+    setError(null);
+    setCampaignProgress(prev => prev.map(campaign => ({ ...campaign, status: 'pending', error: undefined })));
+  };
+
+  const getStatusIcon = (status: CampaignProgress['status']) => {
+    switch (status) {
+      case 'pending':
+        return <div className="w-4 h-4 border-2 border-gray-300 rounded-full"></div>;
+      case 'processing':
+        return <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>;
+      case 'completed':
+        return (
+          <div className="w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+            <svg className="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+      case 'failed':
+        return (
+          <div className="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center">
+            <svg className="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+          </div>
+        );
+      default:
+        return null;
+    }
   };
 
   if (loadingCommon) {
@@ -291,7 +389,57 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
           </div>
         )}
 
-        {updateComplete ? (
+        {showProgress && !updateComplete ? (
+          <div className="mb-6">
+            <div className="mb-4">
+              <h4 className="text-sm font-medium text-gray-900 mb-3">
+                Updating Campaign Targeting
+              </h4>
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {campaignProgress.map((campaign) => (
+                  <div key={campaign.id} className="flex items-center space-x-3 p-2 bg-gray-50 rounded">
+                    {getStatusIcon(campaign.status)}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {campaign.name}
+                      </p>
+                      {campaign.status === 'failed' && campaign.error && (
+                        <p className="text-xs text-red-500 truncate">{campaign.error}</p>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {campaign.status === 'pending' && 'Waiting...'}
+                      {campaign.status === 'processing' && 'Updating...'}
+                      {campaign.status === 'completed' && 'Done'}
+                      {campaign.status === 'failed' && 'Failed'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="flex justify-end space-x-3">
+              {!updating && (
+                <>
+                  <button
+                    type="button"
+                    onClick={resetModal}
+                    className="px-4 py-2 text-gray-600 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500"
+                  >
+                    Try Again
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    Close
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : updateComplete ? (
           <div className={`mb-6 p-4 border rounded-md ${
             updateResults?.success 
               ? 'bg-green-50 border-green-200' 
@@ -302,7 +450,15 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
             }`}>
               {updateResults?.message}
             </p>
-            <div className="mt-4">
+            <div className="mt-4 flex space-x-3">
+              {!updateResults?.success && (
+                <button
+                  onClick={resetModal}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500"
+                >
+                  Try Again
+                </button>
+              )}
               <button
                 onClick={handleClose}
                 className={`px-4 py-2 text-sm font-medium rounded-md ${
