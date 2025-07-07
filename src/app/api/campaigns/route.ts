@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const accountId = searchParams.get('accountId');
   const activeOnly = searchParams.get('activeOnly') === 'true';
-  const searchQuery = searchParams.get('search') || '';
+  // searchQuery removed - now handled client-side for better performance
   
   if (!accountId) {
     return NextResponse.json({ error: 'Account ID is required' }, { status: 400 });
@@ -21,7 +21,6 @@ export async function GET(request: NextRequest) {
     const api = new LinkedInAPI(accessToken);
     const campaigns = await api.getCampaigns(accountId, {
       activeOnly,
-      searchQuery,
       getAllPages: true
     });
     

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { LinkedInCampaign, LinkedInAccount } from '@/types/linkedin';
 import CampaignList from '@/components/CampaignList';
 import BatchUpdateModal from '@/components/BatchUpdateModal';
@@ -22,18 +22,26 @@ export default function Dashboard() {
   const [activeOnly, setActiveOnly] = useState<boolean>(true); // Default to active campaigns only
   const [activeTab, setActiveTab] = useState<'campaigns' | 'database'>('campaigns');
   const [dateRange, setDateRange] = useState<DateRange>(getDefaultDateRange());
+  const [allCampaigns, setAllCampaigns] = useState<LinkedInCampaign[]>([]); // Store all campaigns
+  const [campaignsPerPage, setCampaignsPerPage] = useState<number>(50);
+  const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Fetch accounts on component mount
   useEffect(() => {
     fetchAccounts();
   }, []);
 
-  // Fetch campaigns when account is selected or filters change
+  // Fetch campaigns when account is selected or active filter changes
   useEffect(() => {
     if (selectedAccount) {
       fetchCampaigns(selectedAccount);
     }
-  }, [selectedAccount, searchQuery, activeOnly, dateRange]);
+  }, [selectedAccount, activeOnly, dateRange]);
+
+  // Reset to page 1 when search query changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery]);
 
   const fetchAccounts = async () => {
     try {
@@ -65,7 +73,7 @@ export default function Dashboard() {
   const fetchCampaigns = async (accountId: string) => {
     try {
       setLoading(true);
-      const response = await fetch(`/api/campaigns?accountId=${accountId}&search=${encodeURIComponent(searchQuery)}&activeOnly=${activeOnly}`);
+      const response = await fetch(`/api/campaigns?accountId=${accountId}&activeOnly=${activeOnly}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch campaigns');
@@ -109,7 +117,7 @@ export default function Dashboard() {
         }
       }
       
-      setCampaigns(campaigns);
+      setAllCampaigns(campaigns);
       setSelectedCampaigns([]); // Clear selection when switching accounts
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch campaigns');
@@ -126,9 +134,35 @@ export default function Dashboard() {
     }
   };
 
+  // Filter and paginate campaigns locally
+  const filteredCampaigns = useMemo(() => {
+    let filtered = allCampaigns;
+    
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(campaign => 
+        campaign.name?.toLowerCase().includes(query) || 
+        campaign.id?.toString().includes(query)
+      );
+    }
+    
+    return filtered;
+  }, [allCampaigns, searchQuery]);
+
+  // Paginated campaigns
+  const paginatedCampaigns = useMemo(() => {
+    const startIndex = (currentPage - 1) * campaignsPerPage;
+    const endIndex = startIndex + campaignsPerPage;
+    return filteredCampaigns.slice(startIndex, endIndex);
+  }, [filteredCampaigns, currentPage, campaignsPerPage]);
+
+  // Total pages
+  const totalPages = Math.ceil(filteredCampaigns.length / campaignsPerPage);
+
   const handleSelectAll = (selected: boolean) => {
     if (selected) {
-      setSelectedCampaigns(campaigns.map(c => c.id).filter((id): id is string => id !== undefined));
+      setSelectedCampaigns(paginatedCampaigns.map((c: LinkedInCampaign) => c.id).filter((id): id is string => id !== undefined));
     } else {
       setSelectedCampaigns([]);
     }
@@ -169,7 +203,7 @@ export default function Dashboard() {
   };
 
   const getRunningCampaignsCount = () => {
-    return campaigns.filter(c => {
+    return allCampaigns.filter(c => {
       // Check if campaign status is ACTIVE
       const hasActiveStatus = c.status?.toUpperCase() === 'ACTIVE';
       
@@ -223,16 +257,16 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <div className="bg-white shadow">
+      <div className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
+          <div className="flex justify-between items-center py-3">
             <div className="flex items-center">
-              <div className="h-8 w-8 bg-blue-600 rounded-lg flex items-center justify-center mr-3">
-                <svg className="h-5 w-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+              <div className="h-6 w-6 bg-blue-600 rounded-md flex items-center justify-center mr-2">
+                <svg className="h-3.5 w-3.5 text-white" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
                 </svg>
               </div>
-              <h1 className="text-2xl font-bold text-gray-900">LinkedIn Ads Manager</h1>
+              <h1 className="text-lg font-semibold text-gray-900">LinkedIn Ads Manager</h1>
             </div>
             
             <button
@@ -240,7 +274,7 @@ export default function Dashboard() {
                 document.cookie = 'linkedin_access_token=; Max-Age=0; path=/';
                 window.location.href = '/';
               }}
-              className="text-gray-500 hover:text-gray-700"
+              className="text-sm text-gray-500 hover:text-gray-700 px-3 py-1 rounded-md hover:bg-gray-50"
             >
               Sign Out
             </button>
@@ -364,7 +398,7 @@ export default function Dashboard() {
                     <div className="ml-5 w-0 flex-1">
                       <dl>
                         <dt className="text-sm font-medium text-gray-500 truncate">Total Campaigns</dt>
-                        <dd className="text-lg font-medium text-gray-900">{campaigns.length}</dd>
+                        <dd className="text-lg font-medium text-gray-900">{allCampaigns.length}</dd>
                       </dl>
                     </div>
                   </div>
@@ -444,14 +478,136 @@ export default function Dashboard() {
               </button>
             </div>
 
+            {/* Campaigns Per Page and Results Info */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2">
+                  <label htmlFor="per-page" className="text-sm font-medium text-gray-700">
+                    Show:
+                  </label>
+                  <select
+                    id="per-page"
+                    value={campaignsPerPage}
+                    onChange={(e) => {
+                      setCampaignsPerPage(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                  </select>
+                  <span className="text-sm text-gray-700">campaigns per page</span>
+                </div>
+                
+                {searchQuery && (
+                  <div className="text-sm text-gray-600">
+                    Showing {filteredCampaigns.length} of {allCampaigns.length} campaigns matching "{searchQuery}"
+                  </div>
+                )}
+              </div>
+              
+              {totalPages > 1 && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-700">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    className="px-2 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-2 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Campaign List */}
             <CampaignList
-              campaigns={campaigns}
+              campaigns={paginatedCampaigns}
               selectedCampaigns={selectedCampaigns}
               onCampaignSelection={handleCampaignSelection}
               onSelectAll={handleSelectAll}
               loading={loading}
             />
+
+            {/* Bottom Pagination */}
+            {totalPages > 1 && (
+              <div className="mt-6 flex items-center justify-between">
+                <div className="text-sm text-gray-700">
+                  Showing {((currentPage - 1) * campaignsPerPage) + 1} to {Math.min(currentPage * campaignsPerPage, filteredCampaigns.length)} of {filteredCampaigns.length} campaigns
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Previous
+                  </button>
+                  
+                  {/* Page numbers */}
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+                    
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`px-3 py-1 border rounded text-sm ${
+                          currentPage === pageNum
+                            ? 'border-blue-500 bg-blue-50 text-blue-600'
+                            : 'border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                  
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Next
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { TargetingEntity } from '@/types/linkedin';
 
 interface BatchUpdateModalProps {
@@ -64,8 +64,28 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const [excludesTargeting, setExcludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
   
   const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
-  const [searchResults, setSearchResults] = useState<Record<string, TargetingEntity[]>>({});
+  const [rawSearchResults, setRawSearchResults] = useState<Record<string, TargetingEntity[]>>({});
   const [loading, setLoading] = useState(false);
+
+  // Computed search results that filter out already selected entities
+  const searchResults = useMemo(() => {
+    const filtered: Record<string, TargetingEntity[]> = {};
+    
+    Object.entries(rawSearchResults).forEach(([facetKey, entities]) => {
+      const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
+      const oppositeTargeting = activeTab === 'includes' ? excludesTargeting : includesTargeting;
+      
+      // Get URNs that should be excluded (already selected in current or opposite targeting)
+      const currentlySelectedUrns = currentTargeting[facetKey as keyof SelectedTargeting].map((entity: TargetingEntity) => entity.urn);
+      const oppositeSelectedUrns = oppositeTargeting[facetKey as keyof SelectedTargeting].map((entity: TargetingEntity) => entity.urn);
+      const excludedUrns = new Set([...currentlySelectedUrns, ...oppositeSelectedUrns]);
+      
+      // Filter out already selected entities
+      filtered[facetKey] = entities.filter((entity: TargetingEntity) => !excludedUrns.has(entity.urn));
+    });
+    
+    return filtered;
+  }, [rawSearchResults, includesTargeting, excludesTargeting, activeTab]);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updateComplete, setUpdateComplete] = useState(false);
@@ -90,6 +110,16 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       );
     }
   }, [campaignIds]);
+
+  // Refresh search results when switching between Include/Exclude tabs
+  useEffect(() => {
+    // Refresh search results for all facets that have active queries
+    Object.entries(searchQueries).forEach(([facetKey, query]) => {
+      if (query && query.length >= 2) {
+        searchTargetingEntities(facetKey, query);
+      }
+    });
+  }, [activeTab]);
 
   const fetchCommonTargeting = async () => {
     try {
@@ -135,7 +165,7 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
 
   const searchTargetingEntities = async (facetKey: string, query: string) => {
     if (!query || query.length < 2) {
-      setSearchResults(prev => ({ ...prev, [facetKey]: [] }));
+      setRawSearchResults(prev => ({ ...prev, [facetKey]: [] }));
       return;
     }
 
@@ -151,7 +181,10 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       }
       
       const data = await response.json();
-      setSearchResults(prev => ({ ...prev, [facetKey]: data.entities || [] }));
+      const allResults = data.entities || [];
+      
+      // Store raw results - filtering happens in the computed searchResults
+      setRawSearchResults(prev => ({ ...prev, [facetKey]: allResults }));
     } catch (err) {
       console.error('Error searching targeting entities:', err);
     } finally {
@@ -181,9 +214,31 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       [facetKey]: [...prev[facetKey as keyof SelectedTargeting], entity]
     }));
     
-    // Clear search results for this facet
-    setSearchResults(prev => ({ ...prev, [facetKey]: [] }));
-    setSearchQueries(prev => ({ ...prev, [facetKey]: '' }));
+    // No need to manipulate search results - computed searchResults will auto-update
+  };
+
+  const addAllSearchResults = (facetKey: string) => {
+    const currentResults = searchResults[facetKey] || [];
+    const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
+    const setTargeting = activeTab === 'includes' ? setIncludesTargeting : setExcludesTargeting;
+    
+    if (currentResults.length === 0) return;
+    
+    // Filter out entities that are already selected
+    const currentlySelectedUrns = new Set(
+      currentTargeting[facetKey as keyof SelectedTargeting].map((entity: TargetingEntity) => entity.urn)
+    );
+    
+    const newEntities = currentResults.filter((entity: TargetingEntity) => !currentlySelectedUrns.has(entity.urn));
+    
+    if (newEntities.length === 0) return;
+    
+    setTargeting(prev => ({
+      ...prev,
+      [facetKey]: [...prev[facetKey as keyof SelectedTargeting], ...newEntities]
+    }));
+    
+    // No need to manipulate search results - computed searchResults will auto-update
   };
 
   const removeTargetingEntity = (facetKey: string, entityUrn: string) => {
@@ -193,6 +248,8 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       ...prev,
       [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((entity: TargetingEntity) => entity.urn !== entityUrn)
     }));
+    
+    // No need to refresh search results - computed searchResults will auto-update
   };
 
   const updateCampaignStatus = (campaignId: string, status: CampaignProgress['status'], error?: string) => {
@@ -227,15 +284,19 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
         }
       });
 
-      // Process campaigns individually with progress tracking
+      // Process campaigns in parallel with progress tracking
       const results: { 
         successful: string[], 
         failed: Array<{ campaignId: string; error: string }> 
       } = { successful: [], failed: [] };
 
-      for (const campaignId of campaignIds) {
+      // Set all campaigns to processing status
+      campaignIds.forEach(campaignId => {
         updateCampaignStatus(campaignId, 'processing');
-        
+      });
+
+      // Create promises for all campaigns
+      const campaignPromises = campaignIds.map(async (campaignId) => {
         try {
           const response = await fetch('/api/campaigns/batch-update', {
             method: 'POST',
@@ -243,7 +304,7 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              campaignIds: [campaignId], // Process one at a time
+              campaignIds: [campaignId], // Process one at a time but in parallel
               accountId,
               targetingUpdate: {
                 includes: includesUrns,
@@ -260,19 +321,35 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
 
           if (data.success) {
             updateCampaignStatus(campaignId, 'completed');
-            results.successful.push(campaignId);
+            return { campaignId, status: 'success' };
           } else {
             updateCampaignStatus(campaignId, 'failed', data.message || 'Update failed');
-            results.failed.push({ campaignId, error: data.message || 'Update failed' });
+            return { campaignId, status: 'failed', error: data.message || 'Update failed' };
           }
         } catch (error: any) {
           updateCampaignStatus(campaignId, 'failed', error.message);
-          results.failed.push({ campaignId, error: error.message });
+          return { campaignId, status: 'failed', error: error.message };
         }
-        
-        // Small delay to show progress
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      });
+
+      // Wait for all campaigns to complete
+      const campaignResults = await Promise.allSettled(campaignPromises);
+      
+      // Process results
+      campaignResults.forEach((result, index) => {
+        const campaignId = campaignIds[index];
+        if (result.status === 'fulfilled' && result.value) {
+          if (result.value.status === 'success') {
+            results.successful.push(campaignId);
+          } else if (result.value.status === 'failed') {
+            results.failed.push({ campaignId, error: result.value.error || 'Unknown error' });
+          }
+        } else {
+          // Handle promise rejection
+          results.failed.push({ campaignId, error: 'Request failed' });
+          updateCampaignStatus(campaignId, 'failed', 'Request failed');
+        }
+      });
 
       setUpdateComplete(true);
       if (results.failed.length > 0) {
@@ -550,12 +627,26 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                       
                       {/* Search results dropdown */}
                       {results.length > 0 && (
-                        <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-40 overflow-y-auto">
+                        <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                          {/* Select All button */}
+                          <div className="sticky top-0 bg-gray-50 border-b border-gray-200 px-3 py-2">
+                            <button
+                              onClick={() => addAllSearchResults(facetKey)}
+                              className="w-full text-left text-sm font-medium text-blue-600 hover:text-blue-800 focus:outline-none flex items-center"
+                            >
+                              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                              </svg>
+                              Select all {results.length} {facet.label.toLowerCase()}
+                            </button>
+                          </div>
+                          
+                          {/* Individual results */}
                           {results.map((entity) => (
                             <button
                               key={entity.urn}
                               onClick={() => addTargetingEntity(facetKey, entity)}
-                              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 focus:outline-none focus:bg-gray-100"
+                              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 focus:outline-none focus:bg-gray-100 border-b border-gray-100 last:border-b-0"
                             >
                               {entity.name}
                             </button>

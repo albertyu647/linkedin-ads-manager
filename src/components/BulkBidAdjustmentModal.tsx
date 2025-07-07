@@ -102,15 +102,19 @@ export default function BulkBidAdjustmentModal({
     setError(null);
 
     try {
-      // Process campaigns individually with progress tracking
+      // Process campaigns in parallel with progress tracking
       const results: { 
         successful: string[], 
         failed: Array<{ campaignId: string; error: string }> 
       } = { successful: [], failed: [] };
       
-      for (const campaignId of selectedCampaigns) {
+      // Set all campaigns to processing status
+      selectedCampaigns.forEach(campaignId => {
         updateCampaignStatus(campaignId, 'processing');
-        
+      });
+      
+      // Create promises for all campaigns
+      const campaignPromises = selectedCampaigns.map(async (campaignId) => {
         try {
           const response = await fetch('/api/campaigns/batch-bid-update', {
             method: 'POST',
@@ -118,7 +122,7 @@ export default function BulkBidAdjustmentModal({
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              campaignIds: [campaignId], // Process one at a time
+              campaignIds: [campaignId], // Process one at a time but in parallel
               bidAdjustment,
               accountId
             }),
@@ -133,19 +137,35 @@ export default function BulkBidAdjustmentModal({
           
           if (result.successful && result.successful.length > 0) {
             updateCampaignStatus(campaignId, 'completed');
-            results.successful.push(campaignId);
+            return { campaignId, status: 'success' };
           } else if (result.failed && result.failed.length > 0) {
             updateCampaignStatus(campaignId, 'failed', result.failed[0].error);
-            results.failed.push({ campaignId, error: result.failed[0].error });
+            return { campaignId, status: 'failed', error: result.failed[0].error };
           }
         } catch (error: any) {
           updateCampaignStatus(campaignId, 'failed', error.message);
-          results.failed.push({ campaignId, error: error.message });
+          return { campaignId, status: 'failed', error: error.message };
         }
-        
-        // Small delay to show progress
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      });
+      
+      // Wait for all campaigns to complete
+      const campaignResults = await Promise.allSettled(campaignPromises);
+      
+      // Process results
+      campaignResults.forEach((result, index) => {
+        const campaignId = selectedCampaigns[index];
+        if (result.status === 'fulfilled' && result.value) {
+          if (result.value.status === 'success') {
+            results.successful.push(campaignId);
+          } else if (result.value.status === 'failed') {
+            results.failed.push({ campaignId, error: result.value.error || 'Unknown error' });
+          }
+        } else {
+          // Handle promise rejection
+          results.failed.push({ campaignId, error: 'Request failed' });
+          updateCampaignStatus(campaignId, 'failed', 'Request failed');
+        }
+      });
 
       if (results.failed.length > 0) {
         setError(`Updated ${results.successful.length} campaigns successfully. ${results.failed.length} failed.`);
