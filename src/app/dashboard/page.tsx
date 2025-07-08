@@ -128,7 +128,13 @@ export default function Dashboard() {
 
   const handleCampaignSelection = (campaignId: string, selected: boolean) => {
     if (selected) {
-      setSelectedCampaigns(prev => [...prev, campaignId]);
+      setSelectedCampaigns(prev => {
+        // Only add if not already selected to prevent duplicates
+        if (!prev.includes(campaignId)) {
+          return [...prev, campaignId];
+        }
+        return prev;
+      });
     } else {
       setSelectedCampaigns(prev => prev.filter(id => id !== campaignId));
     }

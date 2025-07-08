@@ -23,6 +23,7 @@ export default function CampaignList({
 }: CampaignListProps) {
   const [sortField, setSortField] = useState<SortField>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -31,6 +32,30 @@ export default function CampaignList({
       setSortField(field);
       setSortDirection('asc');
     }
+  };
+
+  const handleCampaignClick = (campaignId: string, currentIndex: number, isShiftClick: boolean, isChecked: boolean) => {
+    if (isShiftClick && lastClickedIndex !== null) {
+      // Range selection with Shift+click
+      const startIndex = Math.min(lastClickedIndex, currentIndex);
+      const endIndex = Math.max(lastClickedIndex, currentIndex);
+      
+      // Get all campaigns in the range
+      const campaignsInRange = sortedCampaigns.slice(startIndex, endIndex + 1);
+      
+      // Select/deselect all campaigns in the range based on the target state
+      campaignsInRange.forEach(campaign => {
+        if (campaign.id) {
+          onCampaignSelection(campaign.id, isChecked);
+        }
+      });
+    } else {
+      // Single campaign selection
+      onCampaignSelection(campaignId, isChecked);
+    }
+    
+    // Update the last clicked index
+    setLastClickedIndex(currentIndex);
   };
 
   const handleSelectNoSpend = () => {
@@ -51,6 +76,9 @@ export default function CampaignList({
     
     // Call onCampaignSelection only for campaigns that need to be selected
     campaignsToSelect.forEach(campaignId => onCampaignSelection(campaignId, true));
+    
+    // Reset last clicked index since we're doing bulk selection
+    setLastClickedIndex(null);
   };
 
   const getNoSpendCount = () => {
@@ -208,7 +236,11 @@ export default function CampaignList({
                 ref={(input) => {
                   if (input) input.indeterminate = isIndeterminate;
                 }}
-                onChange={(e) => onSelectAll(e.target.checked)}
+                onChange={(e) => {
+                  onSelectAll(e.target.checked);
+                  // Reset last clicked index since we're doing bulk selection
+                  setLastClickedIndex(null);
+                }}
                 className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
               />
               <label className="ml-2 text-sm text-gray-600">
@@ -291,7 +323,7 @@ export default function CampaignList({
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {sortedCampaigns.map((campaign) => (
+            {sortedCampaigns.map((campaign, index) => (
               <tr 
                 key={campaign.id || 'unknown'}
                 className={`hover:bg-gray-50 ${
@@ -302,7 +334,18 @@ export default function CampaignList({
                   <input
                     type="checkbox"
                     checked={campaign.id ? selectedCampaigns.includes(campaign.id) : false}
-                    onChange={(e) => campaign.id && onCampaignSelection(campaign.id, e.target.checked)}
+                    onChange={(e) => {
+                      if (campaign.id) {
+                        handleCampaignClick(campaign.id, index, false, e.target.checked);
+                      }
+                    }}
+                    onClick={(e) => {
+                      if (campaign.id && e.shiftKey) {
+                        e.preventDefault();
+                        const isCurrentlySelected = selectedCampaigns.includes(campaign.id);
+                        handleCampaignClick(campaign.id, index, true, !isCurrentlySelected);
+                      }
+                    }}
                     className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                   />
                 </td>
