@@ -40,6 +40,8 @@ export default function CampaignList({
   const [editMode, setEditMode] = useState(false);
   const [bidChanges, setBidChanges] = useState<Map<string, number>>(new Map());
   const [savingBids, setSavingBids] = useState(false);
+  const [showProgress, setShowProgress] = useState(false);
+  const [campaignProgress, setCampaignProgress] = useState<Map<string, 'pending' | 'processing' | 'completed' | 'failed'>>(new Map());
 
   // Fetch bid adjustments for all campaigns
   useEffect(() => {
@@ -175,6 +177,14 @@ export default function CampaignList({
     setEditMode(!editMode);
   };
 
+  const updateCampaignProgress = (campaignId: string, status: 'pending' | 'processing' | 'completed' | 'failed') => {
+    setCampaignProgress(prev => {
+      const newMap = new Map(prev);
+      newMap.set(campaignId, status);
+      return newMap;
+    });
+  };
+
   const confirmBidChanges = async () => {
     if (bidChanges.size === 0) {
       setEditMode(false);
@@ -182,18 +192,34 @@ export default function CampaignList({
     }
 
     setSavingBids(true);
+    setShowProgress(true);
+    
+    // Initialize progress tracking
+    const progressMap = new Map<string, 'pending' | 'processing' | 'completed' | 'failed'>();
+    bidChanges.forEach((_, campaignId) => {
+      progressMap.set(campaignId, 'pending');
+    });
+    setCampaignProgress(progressMap);
+
     const results = { successful: [] as string[], failed: [] as Array<{campaignId: string, error: string}> };
 
-    for (const [campaignId, newBid] of bidChanges.entries()) {
+    // Create promises for all campaigns (PARALLEL PROCESSING)
+    const campaignPromises = Array.from(bidChanges.entries()).map(async ([campaignId, newBid]) => {
       const campaign = campaigns.find(c => c.id === campaignId);
-      if (!campaign || !campaign.unitCost) continue;
+      if (!campaign || !campaign.unitCost) {
+        return { campaignId, status: 'skipped' };
+      }
 
       const oldBid = parseFloat(campaign.unitCost.amount);
       const bidAdjustment = newBid - oldBid;
 
-      if (bidAdjustment === 0) continue; // Skip if no change
+      if (bidAdjustment === 0) {
+        return { campaignId, status: 'skipped' };
+      }
 
       try {
+        updateCampaignProgress(campaignId, 'processing');
+        
         const response = await fetch('/api/campaigns/batch-bid-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -207,8 +233,6 @@ export default function CampaignList({
         if (response.ok) {
           const result = await response.json();
           if (result.successful?.length > 0) {
-            results.successful.push(campaignId);
-            
             // Record in bid history
             const currentSpent = parseFloat(campaign.spent?.amount || '0');
             let spendSinceOct1 = 0;
@@ -235,30 +259,51 @@ export default function CampaignList({
                 accountId
               })
             });
+            
+            updateCampaignProgress(campaignId, 'completed');
+            return { campaignId, status: 'success' };
           }
         } else {
           const errorData = await response.json();
-          results.failed.push({ campaignId, error: errorData.error || 'Failed to update' });
+          updateCampaignProgress(campaignId, 'failed');
+          return { campaignId, status: 'failed', error: errorData.error || 'Failed to update' };
         }
       } catch (error: any) {
-        results.failed.push({ campaignId, error: error.message });
+        updateCampaignProgress(campaignId, 'failed');
+        return { campaignId, status: 'failed', error: error.message };
       }
-    }
+    });
+
+    // Wait for ALL campaigns to complete in PARALLEL
+    const campaignResults = await Promise.allSettled(campaignPromises);
+    
+    // Process results
+    campaignResults.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        if (result.value.status === 'success') {
+          results.successful.push(result.value.campaignId);
+        } else if (result.value.status === 'failed') {
+          results.failed.push({ 
+            campaignId: result.value.campaignId, 
+            error: result.value.error || 'Unknown error' 
+          });
+        }
+      }
+    });
 
     setSavingBids(false);
     
-    if (results.failed.length > 0) {
-      alert(`Updated ${results.successful.length} bids successfully. ${results.failed.length} failed.`);
-    } else {
-      alert(`Successfully updated ${results.successful.length} bid${results.successful.length === 1 ? '' : 's'}!`);
-    }
-
-    // Clear changes and exit edit mode
-    setBidChanges(new Map());
-    setEditMode(false);
-    
-    // Reload page to show updated bids
-    window.location.reload();
+    // Wait a moment to show completion, then reload
+    setTimeout(() => {
+      if (results.failed.length > 0) {
+        alert(`Updated ${results.successful.length} bids successfully. ${results.failed.length} failed.`);
+      } else {
+        alert(`Successfully updated ${results.successful.length} bid${results.successful.length === 1 ? '' : 's'}!`);
+      }
+      
+      // Reload page to show updated bids
+      window.location.reload();
+    }, 1000);
   };
 
   const sortedCampaigns = useMemo(() => {
@@ -810,6 +855,91 @@ export default function CampaignList({
         <div className="bg-blue-50 px-4 py-3 border-t border-gray-200">
           <div className="text-sm text-blue-800">
             {selectedCampaigns.length} campaign{selectedCampaigns.length === 1 ? '' : 's'} selected
+          </div>
+        </div>
+      )}
+
+      {/* Progress Modal */}
+      {showProgress && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+          <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">
+                Updating Campaign Bids
+              </h3>
+              <div className="space-y-2">
+                {Array.from(bidChanges.entries()).map(([campaignId, newBid]) => {
+                  const campaign = campaigns.find(c => c.id === campaignId);
+                  const status = campaignProgress.get(campaignId) || 'pending';
+                  const oldBid = campaign?.unitCost ? parseFloat(campaign.unitCost.amount) : 0;
+                  const adjustment = newBid - oldBid;
+                  
+                  return (
+                    <div key={campaignId} className="flex items-center space-x-3 p-3 bg-gray-50 rounded">
+                      {/* Status Icon */}
+                      <div className="flex-shrink-0">
+                        {status === 'pending' && (
+                          <div className="w-5 h-5 border-2 border-gray-300 rounded-full"></div>
+                        )}
+                        {status === 'processing' && (
+                          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                        )}
+                        {status === 'completed' && (
+                          <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        {status === 'failed' && (
+                          <div className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Campaign Info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {campaign?.name || `Campaign ${campaignId}`}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {oldBid.toFixed(2)} → {newBid.toFixed(2)} 
+                          <span className={adjustment > 0 ? 'text-green-600' : 'text-red-600'}>
+                            {' '}({adjustment > 0 ? '+' : ''}{adjustment.toFixed(2)})
+                          </span>
+                        </p>
+                      </div>
+                      
+                      {/* Status Text */}
+                      <div className="text-xs text-gray-500 flex-shrink-0">
+                        {status === 'pending' && 'Waiting...'}
+                        {status === 'processing' && 'Updating...'}
+                        {status === 'completed' && 'Done'}
+                        {status === 'failed' && 'Failed'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              
+              {!savingBids && (
+                <div className="mt-6 flex justify-end">
+                  <button
+                    onClick={() => {
+                      setShowProgress(false);
+                      setBidChanges(new Map());
+                      setEditMode(false);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
