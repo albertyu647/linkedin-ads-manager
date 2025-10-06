@@ -45,6 +45,19 @@ export interface EntityCacheStats {
   newestUpdate: string | null;
 }
 
+export interface BidAdjustmentHistory {
+  id?: number;
+  campaignId: string;
+  adjustmentTimestamp: string;
+  bidAdjustmentAmount: number;
+  oldBid: number;
+  newBid: number;
+  spentAtAdjustment: number; // Kept for backward compatibility
+  spendSinceOct1AtAdjustment: number; // New baseline tracking
+  accountId: string;
+  createdAt: string;
+}
+
 class LinkedInEntityDB {
   private db: sqlite3.Database | null = null;
   private readonly dbPath: string;
@@ -140,6 +153,41 @@ class LinkedInEntityDB {
 
           this.db!.run(`
             CREATE INDEX IF NOT EXISTS idx_entities_name ON targeting_entities (name)
+          `);
+
+          // Bid adjustment history table
+          this.db!.run(`
+            CREATE TABLE IF NOT EXISTS bid_adjustment_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              campaign_id TEXT NOT NULL,
+              adjustment_timestamp TEXT NOT NULL,
+              bid_adjustment_amount REAL NOT NULL,
+              old_bid REAL NOT NULL,
+              new_bid REAL NOT NULL,
+              spent_at_adjustment REAL NOT NULL,
+              spend_since_oct1_at_adjustment REAL DEFAULT 0,
+              account_id TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            )
+          `);
+
+          // Add the new column to existing tables if it doesn't exist
+          this.db!.run(`
+            ALTER TABLE bid_adjustment_history 
+            ADD COLUMN spend_since_oct1_at_adjustment REAL DEFAULT 0
+          `, (err) => {
+            // Ignore error if column already exists
+            if (err && !err.message.includes('duplicate column')) {
+              console.error('[EntityDB] Error adding spend_since_oct1_at_adjustment column:', err);
+            }
+          });
+
+          this.db!.run(`
+            CREATE INDEX IF NOT EXISTS idx_bid_history_campaign ON bid_adjustment_history (campaign_id)
+          `);
+
+          this.db!.run(`
+            CREATE INDEX IF NOT EXISTS idx_bid_history_timestamp ON bid_adjustment_history (campaign_id, adjustment_timestamp DESC)
           `);
 
           console.log('[EntityDB] Database initialized successfully');
@@ -582,6 +630,171 @@ class LinkedInEntityDB {
   }
 
   /**
+   * Record a bid adjustment in the database
+   */
+  async recordBidAdjustment(adjustment: Omit<BidAdjustmentHistory, 'id' | 'createdAt'>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      const now = new Date().toISOString();
+
+      const sql = `
+        INSERT INTO bid_adjustment_history 
+        (campaign_id, adjustment_timestamp, bid_adjustment_amount, old_bid, new_bid, spent_at_adjustment, spend_since_oct1_at_adjustment, account_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+      this.db.run(
+        sql,
+        [
+          adjustment.campaignId,
+          adjustment.adjustmentTimestamp,
+          adjustment.bidAdjustmentAmount,
+          adjustment.oldBid,
+          adjustment.newBid,
+          adjustment.spentAtAdjustment,
+          adjustment.spendSinceOct1AtAdjustment,
+          adjustment.accountId,
+          now
+        ],
+        (err) => {
+          if (err) {
+            console.error('[EntityDB] Error recording bid adjustment:', err);
+            reject(err);
+          } else {
+            console.log('[EntityDB] Bid adjustment recorded for campaign:', adjustment.campaignId);
+            resolve();
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Get the latest bid adjustment for a campaign
+   */
+  async getLatestBidAdjustment(campaignId: string): Promise<BidAdjustmentHistory | null> {
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      const sql = `
+        SELECT 
+          id,
+          campaign_id as campaignId,
+          adjustment_timestamp as adjustmentTimestamp,
+          bid_adjustment_amount as bidAdjustmentAmount,
+          old_bid as oldBid,
+          new_bid as newBid,
+          spent_at_adjustment as spentAtAdjustment,
+          spend_since_oct1_at_adjustment as spendSinceOct1AtAdjustment,
+          account_id as accountId,
+          created_at as createdAt
+        FROM bid_adjustment_history 
+        WHERE campaign_id = ?
+        ORDER BY adjustment_timestamp DESC
+        LIMIT 1
+      `;
+
+      this.db.get(sql, [campaignId], (err, row: any) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        resolve(row || null);
+      });
+    });
+  }
+
+  /**
+   * Get all bid adjustments for a campaign
+   */
+  async getBidAdjustmentHistory(campaignId: string): Promise<BidAdjustmentHistory[]> {
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      const sql = `
+        SELECT 
+          id,
+          campaign_id as campaignId,
+          adjustment_timestamp as adjustmentTimestamp,
+          bid_adjustment_amount as bidAdjustmentAmount,
+          old_bid as oldBid,
+          new_bid as newBid,
+          spent_at_adjustment as spentAtAdjustment,
+          spend_since_oct1_at_adjustment as spendSinceOct1AtAdjustment,
+          account_id as accountId,
+          created_at as createdAt
+        FROM bid_adjustment_history 
+        WHERE campaign_id = ?
+        ORDER BY adjustment_timestamp DESC
+      `;
+
+      this.db.all(sql, [campaignId], (err, rows: any[]) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        resolve(rows || []);
+      });
+    });
+  }
+
+  /**
+   * Batch insert bid adjustments (for migration from localStorage)
+   */
+  async batchInsertBidAdjustments(adjustments: Omit<BidAdjustmentHistory, 'id' | 'createdAt'>[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.db) {
+        reject(new Error('Database not initialized'));
+        return;
+      }
+
+      const now = new Date().toISOString();
+
+      const stmt = this.db.prepare(`
+        INSERT INTO bid_adjustment_history 
+        (campaign_id, adjustment_timestamp, bid_adjustment_amount, old_bid, new_bid, spent_at_adjustment, spend_since_oct1_at_adjustment, account_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const adjustment of adjustments) {
+        stmt.run(
+          adjustment.campaignId,
+          adjustment.adjustmentTimestamp,
+          adjustment.bidAdjustmentAmount,
+          adjustment.oldBid,
+          adjustment.newBid,
+          adjustment.spentAtAdjustment,
+          adjustment.spendSinceOct1AtAdjustment || 0, // Default to 0 for old records
+          adjustment.accountId,
+          now
+        );
+      }
+
+      stmt.finalize((err) => {
+        if (err) {
+          console.error('[EntityDB] Error batch inserting bid adjustments:', err);
+          reject(err);
+        } else {
+          console.log(`[EntityDB] Successfully migrated ${adjustments.length} bid adjustments`);
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
    * Close database connection
    */
   async close(): Promise<void> {
@@ -600,4 +813,4 @@ class LinkedInEntityDB {
 
 // Export singleton instance
 export const linkedInEntityDB = new LinkedInEntityDB();
-export default linkedInEntityDB; 
+export default linkedInEntityDB;

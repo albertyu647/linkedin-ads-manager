@@ -21,7 +21,20 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeOnly, setActiveOnly] = useState<boolean>(true); // Default to active campaigns only
   const [activeTab, setActiveTab] = useState<'campaigns' | 'database'>('campaigns');
-  const [dateRange, setDateRange] = useState<DateRange>(getDefaultDateRange());
+  const [dateRange, setDateRange] = useState<DateRange>(() => {
+    // Try to load saved date range from localStorage
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('linkedin_ads_date_range');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {
+          console.error('Failed to parse saved date range:', e);
+        }
+      }
+    }
+    return getDefaultDateRange();
+  });
   const [allCampaigns, setAllCampaigns] = useState<LinkedInCampaign[]>([]); // Store all campaigns
   const [campaignsPerPage, setCampaignsPerPage] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -30,6 +43,13 @@ export default function Dashboard() {
   useEffect(() => {
     fetchAccounts();
   }, []);
+
+  // Save date range to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('linkedin_ads_date_range', JSON.stringify(dateRange));
+    }
+  }, [dateRange]);
 
   // Fetch campaigns when account is selected or active filter changes
   useEffect(() => {
@@ -87,28 +107,70 @@ export default function Dashboard() {
         try {
           const campaignIds = campaigns.map((c: any) => c.id).filter(Boolean);
           if (campaignIds.length > 0) {
-            const spendResponse = await fetch(
-              `/api/campaigns/spend?accountId=${accountId}&campaignIds=${campaignIds.join(',')}&startDate=${dateRange.start}&endDate=${dateRange.end}`
-            );
+            // Fetch both date range spend and Oct 1 baseline spend in parallel
+            const [spendResponse, oct1Response] = await Promise.all([
+              fetch(
+                `/api/campaigns/spend?accountId=${accountId}&campaignIds=${campaignIds.join(',')}&startDate=${dateRange.start}&endDate=${dateRange.end}`
+              ),
+              fetch(
+                `/api/campaigns/spend-since-oct1?accountId=${accountId}&campaignIds=${campaignIds.join(',')}`
+              )
+            ]);
             
             if (spendResponse.ok) {
-              const spendData = await spendResponse.json();
-              console.log('[Dashboard] Received spend data:', spendData);
+              const analyticsData = await spendResponse.json();
+              console.log('[Dashboard] Received analytics data:', analyticsData);
               
-              // Merge spend data with campaigns
+              // Merge analytics data with campaigns
               campaigns.forEach((campaign: any) => {
-                if (campaign.id && spendData.spendData && spendData.spendData[campaign.id] !== undefined) {
-                  // spendData.spendData[campaign.id] is now a number
-                  const spendAmount = spendData.spendData[campaign.id];
-                  if (typeof spendAmount === 'number' && spendAmount > 0) {
-                    campaign.spent = {
-                      amount: spendAmount.toString(),
-                      currencyCode: campaign.dailyBudget?.currencyCode || 'USD' // Use campaign currency or default to USD
-                    };
-                    console.log('[Dashboard] Set spend for campaign', campaign.id, ':', campaign.spent);
+                if (campaign.id) {
+                  // Spend
+                  if (analyticsData.spendData && analyticsData.spendData[campaign.id] !== undefined) {
+                    const spendAmount = analyticsData.spendData[campaign.id];
+                    if (typeof spendAmount === 'number' && spendAmount > 0) {
+                      campaign.spent = {
+                        amount: spendAmount.toString(),
+                        currencyCode: campaign.dailyBudget?.currencyCode || 'USD'
+                      };
+                    }
+                  }
+                  
+                  // Impressions
+                  if (analyticsData.impressionsData && analyticsData.impressionsData[campaign.id] !== undefined) {
+                    campaign.impressions = analyticsData.impressionsData[campaign.id];
+                  }
+                  
+                  // Clicks
+                  if (analyticsData.clicksData && analyticsData.clicksData[campaign.id] !== undefined) {
+                    campaign.clicks = analyticsData.clicksData[campaign.id];
+                  }
+                  
+                  // Leads
+                  if (analyticsData.leadsData && analyticsData.leadsData[campaign.id] !== undefined) {
+                    campaign.leads = analyticsData.leadsData[campaign.id];
                   }
                 }
               });
+            }
+            
+            // Merge Oct 1 baseline spend data
+            if (oct1Response.ok) {
+              const oct1Data = await oct1Response.json();
+              console.log('[Dashboard] ✅ Oct 1 API Response:', oct1Data);
+              console.log('[Dashboard] Oct 1 spend data keys:', Object.keys(oct1Data.spendData || {}));
+              
+              campaigns.forEach((campaign: any) => {
+                if (campaign.id && oct1Data.spendData && oct1Data.spendData[campaign.id] !== undefined) {
+                  campaign.spendSinceOct1 = oct1Data.spendData[campaign.id];
+                  console.log(`[Dashboard] ✅ Campaign ${campaign.id}: Oct1=$${campaign.spendSinceOct1}`);
+                } else {
+                  console.log(`[Dashboard] ❌ Campaign ${campaign.id}: No Oct 1 data found`);
+                }
+              });
+            } else {
+              console.error('[Dashboard] ❌ Oct 1 API call failed:', oct1Response.status, oct1Response.statusText);
+              const errorText = await oct1Response.text();
+              console.error('[Dashboard] Oct 1 API error details:', errorText);
             }
           }
         } catch (spendError) {
@@ -545,6 +607,7 @@ export default function Dashboard() {
               onCampaignSelection={handleCampaignSelection}
               onSelectAll={handleSelectAll}
               loading={loading}
+              accountId={selectedAccount}
             />
 
             {/* Bottom Pagination */}
@@ -646,6 +709,7 @@ export default function Dashboard() {
          <BulkBidAdjustmentModal
            isOpen={showBulkBidAdjustment}
            selectedCampaigns={selectedCampaigns}
+           campaigns={allCampaigns}
            accountId={selectedAccount}
            onClose={() => setShowBulkBidAdjustment(false)}
            onSuccess={handleBulkBidAdjustmentComplete}
@@ -653,4 +717,4 @@ export default function Dashboard() {
        )}
     </div>
   );
-} 
+}

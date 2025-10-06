@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { LinkedInCampaign } from '@/types/linkedin';
 
 interface BulkBidAdjustmentModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedCampaigns: string[];
+  campaigns: LinkedInCampaign[]; // Full campaign data to get current bids and spending
   accountId: string;
   onSuccess: () => void;
 }
@@ -21,6 +23,7 @@ export default function BulkBidAdjustmentModal({
   isOpen,
   onClose,
   selectedCampaigns,
+  campaigns,
   accountId,
   onSuccess
 }: BulkBidAdjustmentModalProps) {
@@ -137,6 +140,49 @@ export default function BulkBidAdjustmentModal({
           
           if (result.successful && result.successful.length > 0) {
             updateCampaignStatus(campaignId, 'completed');
+            
+            // Record the bid adjustment in database for tracking
+            const campaign = campaigns.find(c => c.id === campaignId);
+            if (campaign) {
+              const currentSpent = parseFloat(campaign.spent?.amount || '0');
+              const oldBid = parseFloat(campaign.unitCost?.amount || '0');
+              const newBid = oldBid + bidAdjustment;
+              
+              // Fetch spend since Oct 1 for this campaign
+              let spendSinceOct1 = 0;
+              try {
+                const oct1Response = await fetch(
+                  `/api/campaigns/spend-since-oct1?accountId=${accountId}&campaignIds=${campaignId}`
+                );
+                if (oct1Response.ok) {
+                  const oct1Data = await oct1Response.json();
+                  spendSinceOct1 = oct1Data.spendData[campaignId] || 0;
+                }
+              } catch (err) {
+                console.error('Failed to fetch Oct 1 spend:', err);
+              }
+              
+              // Save to database via API
+              try {
+                await fetch('/api/campaigns/bid-history', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    campaignId,
+                    bidAdjustmentAmount: bidAdjustment,
+                    oldBid,
+                    newBid,
+                    spentAtAdjustment: currentSpent,
+                    spendSinceOct1AtAdjustment: spendSinceOct1,
+                    accountId
+                  })
+                });
+              } catch (err) {
+                console.error('Failed to record bid adjustment:', err);
+                // Don't fail the whole operation if tracking fails
+              }
+            }
+            
             return { campaignId, status: 'success' };
           } else if (result.failed && result.failed.length > 0) {
             updateCampaignStatus(campaignId, 'failed', result.failed[0].error);
@@ -344,4 +390,4 @@ export default function BulkBidAdjustmentModal({
       </div>
     </div>
   );
-} 
+}

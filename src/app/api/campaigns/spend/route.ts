@@ -24,21 +24,26 @@ export async function GET(req: NextRequest) {
 
     const linkedInAPI = new LinkedInAPI(accessToken);
     
-    // Get spend data from LinkedIn API using the dedicated method
+    // Get analytics data from LinkedIn API (spend, impressions, clicks, leads)
     const defaultStartDate = startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const defaultEndDate = endDate || new Date().toISOString().split('T')[0];
     
-    const spendData = await linkedInAPI.fetchCampaignSpendData(campaignIds, accountId, defaultStartDate, defaultEndDate);
+    const analyticsData = await linkedInAPI.fetchCampaignAnalyticsData(campaignIds, accountId, defaultStartDate, defaultEndDate);
 
-    console.log('[Spend API] Raw spend data from LinkedIn API:', spendData);
+    console.log('[Spend API] Analytics data from LinkedIn API:', analyticsData);
 
-    // Return the spend data directly as numbers (dashboard expects spendData[campaignId] to be a number)
-    return NextResponse.json({ spendData });
+    // Return all analytics data
+    return NextResponse.json({
+      spendData: analyticsData.spend,
+      impressionsData: analyticsData.impressions,
+      clicksData: analyticsData.clicks,
+      leadsData: analyticsData.leads
+    });
   } catch (error) {
-    console.error('Error fetching campaign spend data:', error);
+    console.error('Error fetching campaign analytics data:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch spend data' },
+      { error: 'Failed to fetch analytics data' },
       { status: 500 }
     );
   }
-} 
+}

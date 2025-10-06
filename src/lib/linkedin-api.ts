@@ -293,10 +293,20 @@ export class LinkedInAPI {
     }
   }
 
-  // Get campaign spend data using the correct LinkedIn API format from documentation
-  async fetchCampaignSpendData(campaignIds: string[], accountId: string, startDate: string, endDate: string): Promise<{ [campaignId: string]: number }> {
+  // Get campaign analytics data (spend, impressions, clicks, leads)
+  async fetchCampaignAnalyticsData(
+    campaignIds: string[], 
+    accountId: string, 
+    startDate: string, 
+    endDate: string
+  ): Promise<{ 
+    spend: { [campaignId: string]: number };
+    impressions: { [campaignId: string]: number };
+    clicks: { [campaignId: string]: number };
+    leads: { [campaignId: string]: number };
+  }> {
     try {
-      console.log('[LinkedIn API] Fetching spend data for account:', accountId);
+      console.log('[LinkedIn API] Fetching analytics data for account:', accountId);
       console.log('[LinkedIn API] Date range:', startDate, 'to', endDate);
       
       // Format dates correctly using LinkedIn's nested tuple format
@@ -320,7 +330,7 @@ export class LinkedInAPI {
       // LinkedIn expects the dateRange parentheses and colons to be literal, not encoded
       const encodedAccounts = `List(urn%3Ali%3AsponsoredAccount%3A${accountId})`;
       
-      const url = `/adAnalytics?q=statistics&dateRange=${dateRangeParam}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,pivotValues`;
+      const url = `/adAnalytics?q=statistics&dateRange=${dateRangeParam}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,oneClickLeads,pivotValues`;
       console.log('[LinkedIn API Analytics Request] GET', url);
       console.log('[LinkedIn API] Decoded URL for comparison:', decodeURIComponent(url));
       
@@ -328,6 +338,9 @@ export class LinkedInAPI {
       console.log('[LinkedIn API Analytics Response]', response.status, response.data?.elements?.length || 0, 'elements');
       
       const spendData: { [campaignId: string]: number } = {};
+      const impressionsData: { [campaignId: string]: number } = {};
+      const clicksData: { [campaignId: string]: number } = {};
+      const leadsData: { [campaignId: string]: number } = {};
       
       // Process the response using the correct LinkedIn API format from documentation
       if (response.data.elements && Array.isArray(response.data.elements)) {
@@ -335,9 +348,12 @@ export class LinkedInAPI {
           console.log('[LinkedIn API] Processing element:', JSON.stringify(element, null, 2));
           
           const costInLocalCurrency = element.costInLocalCurrency;
+          const impressions = element.impressions;
+          const clicks = element.clicks;
+          const oneClickLeads = element.oneClickLeads;
           const pivotValues = element.pivotValues;
           
-          if (pivotValues && Array.isArray(pivotValues) && costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+          if (pivotValues && Array.isArray(pivotValues)) {
             // With CREATIVE+CAMPAIGN pivots, pivotValues contains [creative_urn, campaign_urn]
             // Find the campaign URN (should be second element based on your Postman response)
             const campaignUrn = pivotValues.find((pv: string) => 
@@ -348,11 +364,36 @@ export class LinkedInAPI {
               // Extract campaign ID from URN (e.g., "urn:li:sponsoredCampaign:100000000" -> "100000000")
               const campaignId = campaignUrn.split(':').pop();
               if (campaignId) {
-                // Convert cost to number and aggregate (since we have multiple creatives per campaign)
-                const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
-                if (!isNaN(spendAmount)) {
-                  spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
-                  console.log('[LinkedIn API] Added spend for campaign', campaignId, ':', spendAmount, 'Total:', spendData[campaignId]);
+                // Aggregate spend
+                if (costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+                  const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
+                  if (!isNaN(spendAmount)) {
+                    spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
+                  }
+                }
+                
+                // Aggregate impressions
+                if (impressions !== undefined && impressions !== null) {
+                  const impressionCount = typeof impressions === 'number' ? impressions : parseInt(String(impressions));
+                  if (!isNaN(impressionCount)) {
+                    impressionsData[campaignId] = (impressionsData[campaignId] || 0) + impressionCount;
+                  }
+                }
+                
+                // Aggregate clicks
+                if (clicks !== undefined && clicks !== null) {
+                  const clickCount = typeof clicks === 'number' ? clicks : parseInt(String(clicks));
+                  if (!isNaN(clickCount)) {
+                    clicksData[campaignId] = (clicksData[campaignId] || 0) + clickCount;
+                  }
+                }
+                
+                // Aggregate leads
+                if (oneClickLeads !== undefined && oneClickLeads !== null) {
+                  const leadCount = typeof oneClickLeads === 'number' ? oneClickLeads : parseInt(String(oneClickLeads));
+                  if (!isNaN(leadCount)) {
+                    leadsData[campaignId] = (leadsData[campaignId] || 0) + leadCount;
+                  }
                 }
               }
             }
@@ -360,8 +401,19 @@ export class LinkedInAPI {
         });
       }
       
-      console.log('[LinkedIn API] Final processed spend data:', spendData);
-      return spendData;
+      console.log('[LinkedIn API] Final processed analytics data:', {
+        spend: spendData,
+        impressions: impressionsData,
+        clicks: clicksData,
+        leads: leadsData
+      });
+      
+      return {
+        spend: spendData,
+        impressions: impressionsData,
+        clicks: clicksData,
+        leads: leadsData
+      };
     } catch (error: any) {
       console.error('[LinkedIn API] Error fetching spend data:', {
         status: error.response?.status,
@@ -385,7 +437,7 @@ export class LinkedInAPI {
           console.log('[LinkedIn API] Retry date range:', simpleDateRange);
           const encodedAccounts = `List(urn%3Ali%3AsponsoredAccount%3A${accountId})`;
           
-          const retryUrl = `/adAnalytics?q=statistics&dateRange=${simpleDateRange}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,pivotValues`;
+          const retryUrl = `/adAnalytics?q=statistics&dateRange=${simpleDateRange}&timeGranularity=ALL&accounts=${encodedAccounts}&pivots=List(CREATIVE,CAMPAIGN)&fields=impressions,clicks,costInLocalCurrency,oneClickLeads,pivotValues`;
           console.log('[LinkedIn API] Retry URL:', retryUrl);
           
           const retryResponse = await this.client.get(retryUrl);
@@ -393,12 +445,19 @@ export class LinkedInAPI {
           
           // Process the retry response the same way
           const spendData: { [campaignId: string]: number } = {};
+          const impressionsData: { [campaignId: string]: number } = {};
+          const clicksData: { [campaignId: string]: number } = {};
+          const leadsData: { [campaignId: string]: number } = {};
+          
           if (retryResponse.data.elements && Array.isArray(retryResponse.data.elements)) {
             retryResponse.data.elements.forEach((element: any) => {
               const costInLocalCurrency = element.costInLocalCurrency;
+              const impressions = element.impressions;
+              const clicks = element.clicks;
+              const oneClickLeads = element.oneClickLeads;
               const pivotValues = element.pivotValues;
               
-              if (pivotValues && Array.isArray(pivotValues) && costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+              if (pivotValues && Array.isArray(pivotValues)) {
                 const campaignUrn = pivotValues.find((pv: string) => 
                   typeof pv === 'string' && pv.includes('urn:li:sponsoredCampaign:')
                 );
@@ -406,24 +465,60 @@ export class LinkedInAPI {
                 if (campaignUrn) {
                   const campaignId = campaignUrn.split(':').pop();
                   if (campaignId) {
-                    const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
-                    if (!isNaN(spendAmount)) {
-                      spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
+                    if (costInLocalCurrency !== undefined && costInLocalCurrency !== null) {
+                      const spendAmount = typeof costInLocalCurrency === 'number' ? costInLocalCurrency : parseFloat(String(costInLocalCurrency));
+                      if (!isNaN(spendAmount)) {
+                        spendData[campaignId] = (spendData[campaignId] || 0) + spendAmount;
+                      }
+                    }
+                    if (impressions !== undefined && impressions !== null) {
+                      const impressionCount = typeof impressions === 'number' ? impressions : parseInt(String(impressions));
+                      if (!isNaN(impressionCount)) {
+                        impressionsData[campaignId] = (impressionsData[campaignId] || 0) + impressionCount;
+                      }
+                    }
+                    if (clicks !== undefined && clicks !== null) {
+                      const clickCount = typeof clicks === 'number' ? clicks : parseInt(String(clicks));
+                      if (!isNaN(clickCount)) {
+                        clicksData[campaignId] = (clicksData[campaignId] || 0) + clickCount;
+                      }
+                    }
+                    if (oneClickLeads !== undefined && oneClickLeads !== null) {
+                      const leadCount = typeof oneClickLeads === 'number' ? oneClickLeads : parseInt(String(oneClickLeads));
+                      if (!isNaN(leadCount)) {
+                        leadsData[campaignId] = (leadsData[campaignId] || 0) + leadCount;
+                      }
                     }
                   }
                 }
               }
             });
           }
-          return spendData;
+          return {
+            spend: spendData,
+            impressions: impressionsData,
+            clicks: clicksData,
+            leads: leadsData
+          };
         } catch (retryError) {
           console.error('[LinkedIn API] Retry also failed:', retryError);
         }
       }
       
-      // Return empty spend data to avoid breaking the UI
-      return {};
+      // Return empty data to avoid breaking the UI
+      return {
+        spend: {},
+        impressions: {},
+        clicks: {},
+        leads: {}
+      };
     }
+  }
+
+  // Legacy method for backwards compatibility
+  async fetchCampaignSpendData(campaignIds: string[], accountId: string, startDate: string, endDate: string): Promise<{ [campaignId: string]: number }> {
+    const data = await this.fetchCampaignAnalyticsData(campaignIds, accountId, startDate, endDate);
+    return data.spend;
   }
 
   // Get targeting facets
@@ -1332,4 +1427,4 @@ export class LinkedInAPI {
     console.log(`[LinkedIn API] Bid update completed. Successful: ${successful.length}, Failed: ${failed.length}`);
     return { successful, failed };
   }
-} 
+}
