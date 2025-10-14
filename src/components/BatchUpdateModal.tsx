@@ -63,6 +63,10 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const [includesTargeting, setIncludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
   const [excludesTargeting, setExcludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
   
+  // Track the original common targeting to detect additions/removals
+  const [originalIncludesTargeting, setOriginalIncludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
+  const [originalExcludesTargeting, setOriginalExcludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
+  
   const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
   const [rawSearchResults, setRawSearchResults] = useState<Record<string, TargetingEntity[]>>({});
   const [loading, setLoading] = useState(false);
@@ -149,10 +153,14 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
         
         // Initialize the current targeting with common targeting
         if (data.commonTargeting.commonIncludes) {
-          setIncludesTargeting({ ...defaultTargeting, ...data.commonTargeting.commonIncludes });
+          const includes = { ...defaultTargeting, ...data.commonTargeting.commonIncludes };
+          setIncludesTargeting(includes);
+          setOriginalIncludesTargeting(includes); // Save original state
         }
         if (data.commonTargeting.commonExcludes) {
-          setExcludesTargeting({ ...defaultTargeting, ...data.commonTargeting.commonExcludes });
+          const excludes = { ...defaultTargeting, ...data.commonTargeting.commonExcludes };
+          setExcludesTargeting(excludes);
+          setOriginalExcludesTargeting(excludes); // Save original state
         }
       }
     } catch (err) {
@@ -268,21 +276,47 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       setShowProgress(true);
       setError(null);
 
-      // Convert targeting to URN arrays
-      const includesUrns: Record<string, string[]> = {};
-      const excludesUrns: Record<string, string[]> = {};
+      // Calculate additions and removals from original state
+      const includesChanges: { add: Record<string, string[]>; remove: Record<string, string[]> } = { add: {}, remove: {} };
+      const excludesChanges: { add: Record<string, string[]>; remove: Record<string, string[]> } = { add: {}, remove: {} };
       
-      Object.entries(includesTargeting).forEach(([key, entities]) => {
-        if (entities.length > 0) {
-          includesUrns[key] = entities.map((entity: TargetingEntity) => entity.urn);
+      // Process includes changes
+      Object.keys(TARGETING_FACETS).forEach((facetKey) => {
+        const currentUrns = new Set(includesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        const originalUrns = new Set(originalIncludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        
+        // Additions: in current but not in original
+        const additions = [...currentUrns].filter(urn => !originalUrns.has(urn));
+        if (additions.length > 0) {
+          includesChanges.add[facetKey] = additions;
+        }
+        
+        // Removals: in original but not in current
+        const removals = [...originalUrns].filter(urn => !currentUrns.has(urn));
+        if (removals.length > 0) {
+          includesChanges.remove[facetKey] = removals;
         }
       });
       
-      Object.entries(excludesTargeting).forEach(([key, entities]) => {
-        if (entities.length > 0) {
-          excludesUrns[key] = entities.map((entity: TargetingEntity) => entity.urn);
+      // Process excludes changes
+      Object.keys(TARGETING_FACETS).forEach((facetKey) => {
+        const currentUrns = new Set(excludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        const originalUrns = new Set(originalExcludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        
+        // Additions: in current but not in original
+        const additions = [...currentUrns].filter(urn => !originalUrns.has(urn));
+        if (additions.length > 0) {
+          excludesChanges.add[facetKey] = additions;
+        }
+        
+        // Removals: in original but not in current
+        const removals = [...originalUrns].filter(urn => !currentUrns.has(urn));
+        if (removals.length > 0) {
+          excludesChanges.remove[facetKey] = removals;
         }
       });
+      
+      console.log('[Batch Update] Changes to apply:', { includesChanges, excludesChanges });
 
       // Process campaigns in parallel with progress tracking
       const results: { 
@@ -306,9 +340,9 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
             body: JSON.stringify({
               campaignIds: [campaignId], // Process one at a time but in parallel
               accountId,
-              targetingUpdate: {
-                includes: includesUrns,
-                excludes: excludesUrns
+              targetingChanges: {
+                includes: includesChanges,
+                excludes: excludesChanges
               }
             }),
           });
@@ -586,9 +620,22 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                 const searchQuery = searchQueries[facetKey] || '';
                 const results = searchResults[facetKey] || [];
 
+                const currentCount = entities.length;
+                const isNearLimit = currentCount >= 80;
+                const isAtLimit = currentCount >= 100;
+                
                 return (
                   <div key={facetKey} className="bg-gray-50 p-4 rounded-lg">
-                    <h4 className="text-sm font-medium text-gray-900 mb-3">{facet.label}</h4>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-medium text-gray-900">{facet.label}</h4>
+                      <span className={`text-xs font-medium px-2 py-1 rounded ${
+                        isAtLimit ? 'bg-red-100 text-red-700' : 
+                        isNearLimit ? 'bg-yellow-100 text-yellow-700' : 
+                        'bg-gray-200 text-gray-600'
+                      }`}>
+                        {currentCount}/100
+                      </span>
+                    </div>
                     
                     {/* Current chips */}
                     {entities && entities.length > 0 && (
@@ -630,15 +677,30 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                         <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
                           {/* Select All button */}
                           <div className="sticky top-0 bg-gray-50 border-b border-gray-200 px-3 py-2">
-                            <button
-                              onClick={() => addAllSearchResults(facetKey)}
-                              className="w-full text-left text-sm font-medium text-blue-600 hover:text-blue-800 focus:outline-none flex items-center"
-                            >
-                              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                              </svg>
-                              Select all {results.length} {facet.label.toLowerCase()}
-                            </button>
+                            {(() => {
+                              const wouldExceedLimit = currentCount + results.length > 100;
+                              const availableSlots = 100 - currentCount;
+                              
+                              if (wouldExceedLimit) {
+                                return (
+                                  <div className="text-xs text-red-600">
+                                    Cannot add all {results.length} items - would exceed 100-item limit (currently {currentCount}/100, {availableSlots} slots available)
+                                  </div>
+                                );
+                              }
+                              
+                              return (
+                                <button
+                                  onClick={() => addAllSearchResults(facetKey)}
+                                  className="w-full text-left text-sm font-medium text-blue-600 hover:text-blue-800 focus:outline-none flex items-center"
+                                >
+                                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                                  </svg>
+                                  Select all {results.length} {facet.label.toLowerCase()}
+                                </button>
+                              );
+                            })()}
                           </div>
                           
                           {/* Individual results */}
@@ -691,4 +753,4 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       </div>
     </div>
   );
-} 
+}

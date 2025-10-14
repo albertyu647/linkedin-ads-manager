@@ -649,6 +649,71 @@ export default function CampaignList({
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
+            {/* Totals Row - First */}
+            <tr className="font-semibold bg-gray-50 border-b-2 border-gray-300">
+              <td className="px-6 py-4 text-sm text-gray-900">
+                Total ({sortedCampaigns.length} campaigns)
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-500">
+                -
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {(() => {
+                  const total = sortedCampaigns.reduce((sum, c) => {
+                    return sum + parseFloat(c.dailyBudget?.amount || '0');
+                  }, 0);
+                  const campaignWithBudget = sortedCampaigns.find(c => c.dailyBudget?.currencyCode);
+                  const currency = campaignWithBudget?.dailyBudget?.currencyCode || 'CAD';
+                  return `${currency} ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                })()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {(() => {
+                  const bids = sortedCampaigns.filter(c => c.unitCost?.amount).map(c => parseFloat(c.unitCost!.amount));
+                  if (bids.length === 0) return '-';
+                  const avg = bids.reduce((sum, b) => sum + b, 0) / bids.length;
+                  const campaignWithBid = sortedCampaigns.find(c => c.unitCost?.currencyCode);
+                  const currency = campaignWithBid?.unitCost?.currencyCode || 'CAD';
+                  return `Avg: ${currency} ${avg.toFixed(2)}`;
+                })()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {(() => {
+                  const total = sortedCampaigns.reduce((sum, c) => {
+                    return sum + parseFloat(c.spent?.amount || '0');
+                  }, 0);
+                  const campaignWithSpend = sortedCampaigns.find(c => c.spent?.currencyCode);
+                  const currency = campaignWithSpend?.spent?.currencyCode || 'CAD';
+                  return `${currency} ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                })()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).impressions || 0), 0).toLocaleString()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).clicks || 0), 0).toLocaleString()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).leads || 0), 0).toLocaleString()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {(() => {
+                  const total = sortedCampaigns.reduce((sum, c) => {
+                    if (!c.id) return sum;
+                    const adjustment = bidAdjustments.get(c.id);
+                    if (!adjustment) return sum;
+                    const currentSpendSinceOct1 = (c as any).spendSinceOct1 || 0;
+                    const spendSince = currentSpendSinceOct1 - adjustment.spendSinceOct1AtAdjustment;
+                    return sum + spendSince;
+                  }, 0);
+                  const campaignWithSpend = sortedCampaigns.find(c => c.spent?.currencyCode);
+                  const currency = campaignWithSpend?.spent?.currencyCode || 'CAD';
+                  return `${currency} ${total.toFixed(2)}`;
+                })()}
+              </td>
+            </tr>
+            
+            {/* Campaign Rows */}
             {sortedCampaigns.map((campaign, index) => (
               <tr 
                 key={campaign.id || 'unknown'}
@@ -755,15 +820,6 @@ export default function CampaignList({
                     return (
                       <div className="flex flex-col group relative">
                         <div className="flex items-center space-x-1">
-                          {wasIncrease ? (
-                            <svg className="h-3 w-3 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                            </svg>
-                          ) : (
-                            <svg className="h-3 w-3 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                            </svg>
-                          )}
                           <span className={`text-sm font-medium ${
                             spendSince > 0 ? 'text-blue-600' : 'text-gray-900'
                           }`}>
@@ -788,66 +844,6 @@ export default function CampaignList({
               </tr>
             ))}
           </tbody>
-          <tfoot className="bg-gray-50 border-t-2 border-gray-300">
-            <tr className="font-semibold">
-              <td className="px-6 py-4 text-sm text-gray-900">
-                Total ({sortedCampaigns.length} campaigns)
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-500">
-                -
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {(() => {
-                  const total = sortedCampaigns.reduce((sum, c) => {
-                    return sum + parseFloat(c.dailyBudget?.amount || '0');
-                  }, 0);
-                  const currency = sortedCampaigns[0]?.dailyBudget?.currencyCode || 'USD';
-                  return `${currency} ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                })()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {(() => {
-                  const bids = sortedCampaigns.filter(c => c.unitCost?.amount).map(c => parseFloat(c.unitCost!.amount));
-                  if (bids.length === 0) return '-';
-                  const avg = bids.reduce((sum, b) => sum + b, 0) / bids.length;
-                  const currency = sortedCampaigns[0]?.unitCost?.currencyCode || 'USD';
-                  return `Avg: ${currency} ${avg.toFixed(2)}`;
-                })()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {(() => {
-                  const total = sortedCampaigns.reduce((sum, c) => {
-                    return sum + parseFloat(c.spent?.amount || '0');
-                  }, 0);
-                  const currency = sortedCampaigns[0]?.spent?.currencyCode || 'USD';
-                  return `${currency} ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                })()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).impressions || 0), 0).toLocaleString()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).clicks || 0), 0).toLocaleString()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {sortedCampaigns.reduce((sum, c) => sum + ((c as any).leads || 0), 0).toLocaleString()}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-900">
-                {(() => {
-                  const total = sortedCampaigns.reduce((sum, c) => {
-                    if (!c.id) return sum;
-                    const adjustment = bidAdjustments.get(c.id);
-                    if (!adjustment) return sum;
-                    const currentSpendSinceOct1 = (c as any).spendSinceOct1 || 0;
-                    const spendSince = currentSpendSinceOct1 - adjustment.spendSinceOct1AtAdjustment;
-                    return sum + spendSince;
-                  }, 0);
-                  const currency = sortedCampaigns[0]?.spent?.currencyCode || 'CAD';
-                  return `${currency} ${total.toFixed(2)}`;
-                })()}
-              </td>
-            </tr>
-          </tfoot>
         </table>
       </div>
 

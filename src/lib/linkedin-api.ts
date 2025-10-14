@@ -1060,8 +1060,8 @@ export class LinkedInAPI {
   async batchUpdateCampaigns(
     campaignIds: string[],
     targetingUpdate: {
-      includes?: Record<string, string[]>;
-      excludes?: Record<string, string[]>;
+      includes?: Record<string, string[]> | { add: Record<string, string[]>; remove: Record<string, string[]> };
+      excludes?: Record<string, string[]> | { add: Record<string, string[]>; remove: Record<string, string[]> };
       excludedTargeting?: Record<string, string[]>; // Legacy support
     },
     accountId: string
@@ -1077,8 +1077,31 @@ export class LinkedInAPI {
     console.log(`[LinkedIn API] Starting batch update for ${campaignIds.length} campaigns`);
     console.log('[Targeting Update]', targetingUpdate);
     
+    // Detect if using new changes format (add/remove) vs legacy format
+    const isChangesFormat = targetingUpdate.includes && 
+      typeof targetingUpdate.includes === 'object' && 
+      'add' in targetingUpdate.includes && 
+      'remove' in targetingUpdate.includes;
+
+    if (isChangesFormat) {
+      console.log('[LinkedIn API] Using new changes format (add/remove)');
+      return this.batchUpdateCampaignsWithChanges(
+        campaignIds, 
+        targetingUpdate as {
+          includes?: { add: Record<string, string[]>; remove: Record<string, string[]> };
+          excludes?: { add: Record<string, string[]>; remove: Record<string, string[]> };
+        },
+        accountId
+      );
+    }
+    
+    console.log('[LinkedIn API] Using legacy merge format');
+    
     // Support legacy excludedTargeting parameter for backwards compatibility
-    const excludedTargeting = targetingUpdate.excludedTargeting || targetingUpdate.excludes || {};
+    // Cast to the legacy format since we've already checked it's not the new format
+    const excludedTargeting = (targetingUpdate.excludedTargeting || 
+      (targetingUpdate.excludes as Record<string, string[]> | undefined) || 
+      {}) as Record<string, string[]>;
 
     for (const campaignId of campaignIds) {
       try {
@@ -1122,10 +1145,13 @@ export class LinkedInAPI {
           );
           // Merge existing and new exclusions, removing duplicates
           const mergedIndustryExcludes = [...new Set([...existingIndustryExcludes, ...newIndustryExcludes])];
-          console.log(`[Merging Industry Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingIndustryExcludes);
-          console.log(`  New:`, newIndustryExcludes);
-          console.log(`  Merged:`, mergedIndustryExcludes);
+          
+          // Validate 100-item limit
+          if (mergedIndustryExcludes.length > 100) {
+            throw new Error(`Industry exclusions would exceed LinkedIn's 100-item limit (${mergedIndustryExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Industry Exclusions] Campaign ${campaignId}: ${existingIndustryExcludes.length} existing + ${newIndustryExcludes.length} new = ${mergedIndustryExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:industries'] = mergedIndustryExcludes;
         }
 
@@ -1135,10 +1161,13 @@ export class LinkedInAPI {
             func.startsWith('urn:li:function:') ? func : `urn:li:function:${func}`
           );
           const mergedJobFunctionExcludes = [...new Set([...existingJobFunctionExcludes, ...newJobFunctionExcludes])];
-          console.log(`[Merging Job Function Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingJobFunctionExcludes);
-          console.log(`  New:`, newJobFunctionExcludes);
-          console.log(`  Merged:`, mergedJobFunctionExcludes);
+          
+          // Validate 100-item limit
+          if (mergedJobFunctionExcludes.length > 100) {
+            throw new Error(`Job function exclusions would exceed LinkedIn's 100-item limit (${mergedJobFunctionExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Job Function Exclusions] Campaign ${campaignId}: ${existingJobFunctionExcludes.length} existing + ${newJobFunctionExcludes.length} new = ${mergedJobFunctionExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:jobFunctions'] = mergedJobFunctionExcludes;
         }
 
@@ -1148,10 +1177,13 @@ export class LinkedInAPI {
             seniority.startsWith('urn:li:seniority:') ? seniority : `urn:li:seniority:${seniority}`
           );
           const mergedSeniorityExcludes = [...new Set([...existingSeniorityExcludes, ...newSeniorityExcludes])];
-          console.log(`[Merging Seniority Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingSeniorityExcludes);
-          console.log(`  New:`, newSeniorityExcludes);
-          console.log(`  Merged:`, mergedSeniorityExcludes);
+          
+          // Validate 100-item limit
+          if (mergedSeniorityExcludes.length > 100) {
+            throw new Error(`Seniority exclusions would exceed LinkedIn's 100-item limit (${mergedSeniorityExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Seniority Exclusions] Campaign ${campaignId}: ${existingSeniorityExcludes.length} existing + ${newSeniorityExcludes.length} new = ${mergedSeniorityExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:seniorities'] = mergedSeniorityExcludes;
         }
 
@@ -1161,10 +1193,13 @@ export class LinkedInAPI {
             title.startsWith('urn:li:title:') ? title : `urn:li:title:${title}`
           );
           const mergedTitleExcludes = [...new Set([...existingTitleExcludes, ...newTitleExcludes])];
-          console.log(`[Merging Job Title Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingTitleExcludes);
-          console.log(`  New:`, newTitleExcludes);
-          console.log(`  Merged:`, mergedTitleExcludes);
+          
+          // Validate 100-item limit
+          if (mergedTitleExcludes.length > 100) {
+            throw new Error(`Job title exclusions would exceed LinkedIn's 100-item limit (${mergedTitleExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Job Title Exclusions] Campaign ${campaignId}: ${existingTitleExcludes.length} existing + ${newTitleExcludes.length} new = ${mergedTitleExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:titles'] = mergedTitleExcludes;
         }
 
@@ -1174,10 +1209,13 @@ export class LinkedInAPI {
             employer.startsWith('urn:li:organization:') ? employer : `urn:li:organization:${employer}`
           );
           const mergedEmployerExcludes = [...new Set([...existingEmployerExcludes, ...newEmployerExcludes])];
-          console.log(`[Merging Company Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingEmployerExcludes);
-          console.log(`  New:`, newEmployerExcludes);
-          console.log(`  Merged:`, mergedEmployerExcludes);
+          
+          // Validate 100-item limit
+          if (mergedEmployerExcludes.length > 100) {
+            throw new Error(`Company exclusions would exceed LinkedIn's 100-item limit (${mergedEmployerExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Company Exclusions] Campaign ${campaignId}: ${existingEmployerExcludes.length} existing + ${newEmployerExcludes.length} new = ${mergedEmployerExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:employers'] = mergedEmployerExcludes;
         }
 
@@ -1187,10 +1225,13 @@ export class LinkedInAPI {
             skill.startsWith('urn:li:skill:') ? skill : `urn:li:skill:${skill}`
           );
           const mergedSkillExcludes = [...new Set([...existingSkillExcludes, ...newSkillExcludes])];
-          console.log(`[Merging Skill Exclusions] Campaign ${campaignId}:`);
-          console.log(`  Existing:`, existingSkillExcludes);
-          console.log(`  New:`, newSkillExcludes);
-          console.log(`  Merged:`, mergedSkillExcludes);
+          
+          // Validate 100-item limit
+          if (mergedSkillExcludes.length > 100) {
+            throw new Error(`Skill exclusions would exceed LinkedIn's 100-item limit (${mergedSkillExcludes.length} items)`);
+          }
+          
+          console.log(`[Merging Skill Exclusions] Campaign ${campaignId}: ${existingSkillExcludes.length} existing + ${newSkillExcludes.length} new = ${mergedSkillExcludes.length} total`);
           (newTargetingCriteria.exclude.or as any)['urn:li:adTargetingFacet:skills'] = mergedSkillExcludes;
         }
 
@@ -1206,27 +1247,13 @@ export class LinkedInAPI {
         console.log(`[LinkedIn API Request] POST /adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`);
         console.log('[New Targeting Criteria]', JSON.stringify(newTargetingCriteria, null, 2));
 
-        // Use BATCH_PARTIAL_UPDATE method as per briefing specifications
-        const batchUpdateUrl = `/adAccounts/${accountId}/adCampaigns?ids=List(${cleanCampaignId})`;
-        const entities: Record<string, any> = {};
-        entities[cleanCampaignId] = {
-          patch: {
-            $set: {
-              targetingCriteria: newTargetingCriteria
-            }
-          }
-        };
-        
-        const batchUpdateData = {
-          entities
-        };
-
+        // Use single-campaign PARTIAL_UPDATE (same pattern as bid updates which work)
         const response = await this.client.post(
-          batchUpdateUrl,
-          batchUpdateData,
+          `/adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`,
+          patchData,
           {
             headers: {
-              'X-RestLi-Method': 'BATCH_PARTIAL_UPDATE'
+              'X-RestLi-Method': 'PARTIAL_UPDATE'
             }
           }
         );
@@ -1247,6 +1274,8 @@ export class LinkedInAPI {
             data: error.response.data
           });
           errorMessage = error.response.data.message || error.response.statusText || errorMessage;
+        } else if (error.message) {
+          errorMessage = error.message;
         }
         
         results.failed.push({
@@ -1258,6 +1287,234 @@ export class LinkedInAPI {
 
     console.log(`[LinkedIn API] Batch update completed. Success: ${results.successful.length}, Failed: ${results.failed.length}`);
     return results;
+  }
+
+  // New method to handle batch updates with add/remove changes
+  private async batchUpdateCampaignsWithChanges(
+    campaignIds: string[],
+    targetingUpdate: {
+      includes?: { add: Record<string, string[]>; remove: Record<string, string[]> };
+      excludes?: { add: Record<string, string[]>; remove: Record<string, string[]> };
+    },
+    accountId: string
+  ): Promise<{ 
+    successful: string[]; 
+    failed: Array<{ campaignId: string; error: string }> 
+  }> {
+    const results = {
+      successful: [] as string[],
+      failed: [] as Array<{ campaignId: string; error: string }>
+    };
+
+    const includesChanges = targetingUpdate.includes as { add: Record<string, string[]>; remove: Record<string, string[]> };
+    const excludesChanges = targetingUpdate.excludes as { add: Record<string, string[]>; remove: Record<string, string[]> };
+
+    console.log('[LinkedIn API] Applying changes to each campaign individually');
+
+    for (const campaignId of campaignIds) {
+      try {
+        // Extract just the campaign ID from the URN if it's a full URN
+        const campaignIdStr = String(campaignId);
+        const cleanCampaignId = campaignIdStr.includes('urn:li:sponsoredCampaign:') 
+          ? campaignIdStr.split(':').pop() 
+          : campaignIdStr;
+
+        if (!cleanCampaignId) {
+          throw new Error(`Invalid campaign ID: ${campaignId}`);
+        }
+
+        console.log(`[LinkedIn API] Processing campaign ${cleanCampaignId}`);
+
+        // Fetch current campaign targeting
+        const currentCampaign = await this.client.get(
+          `/adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`
+        );
+
+        const existingTargetingCriteria = currentCampaign.data.targetingCriteria || {
+          include: { and: [] },
+          exclude: { or: {} }
+        };
+
+        console.log(`[Campaign ${cleanCampaignId}] Current targeting:`, JSON.stringify(existingTargetingCriteria, null, 2));
+
+        // Build new targeting by applying additions and removals
+        const newTargetingCriteria = JSON.parse(JSON.stringify(existingTargetingCriteria)); // Deep copy
+
+        // Apply INCLUDES changes
+        if (includesChanges) {
+          // Process additions
+          if (includesChanges.add) {
+            for (const [facetKey, urnsToAdd] of Object.entries(includesChanges.add)) {
+              if (urnsToAdd.length === 0) continue;
+
+              const facetUrn = this.getFacetUrnFromKey(facetKey);
+              console.log(`[Campaign ${cleanCampaignId}] Adding ${urnsToAdd.length} ${facetKey} to includes`);
+
+              // Find or create the facet in include.and structure
+              let facetGroup = newTargetingCriteria.include.and.find((group: any) => 
+                group.or && group.or[facetUrn]
+              );
+
+              if (!facetGroup) {
+                facetGroup = { or: { [facetUrn]: [] } };
+                newTargetingCriteria.include.and.push(facetGroup);
+              }
+
+              // Add new URNs (avoid duplicates)
+              const currentUrns = new Set(facetGroup.or[facetUrn]);
+              urnsToAdd.forEach(urn => currentUrns.add(urn));
+              facetGroup.or[facetUrn] = Array.from(currentUrns);
+
+              // Validate 100-item limit
+              if (facetGroup.or[facetUrn].length > 100) {
+                throw new Error(`${facetKey} would exceed LinkedIn's 100-item limit (${facetGroup.or[facetUrn].length} items)`);
+              }
+            }
+          }
+
+          // Process removals
+          if (includesChanges.remove) {
+            for (const [facetKey, urnsToRemove] of Object.entries(includesChanges.remove)) {
+              if (urnsToRemove.length === 0) continue;
+
+              const facetUrn = this.getFacetUrnFromKey(facetKey);
+              console.log(`[Campaign ${cleanCampaignId}] Removing ${urnsToRemove.length} ${facetKey} from includes`);
+
+              // Find the facet in include.and structure
+              const facetGroup = newTargetingCriteria.include.and.find((group: any) => 
+                group.or && group.or[facetUrn]
+              );
+
+              if (facetGroup && facetGroup.or[facetUrn]) {
+                // Remove specified URNs
+                const urnsToRemoveSet = new Set(urnsToRemove);
+                facetGroup.or[facetUrn] = facetGroup.or[facetUrn].filter((urn: string) => 
+                  !urnsToRemoveSet.has(urn)
+                );
+
+                // Remove the facet group if empty
+                if (facetGroup.or[facetUrn].length === 0) {
+                  delete facetGroup.or[facetUrn];
+                  if (Object.keys(facetGroup.or).length === 0) {
+                    newTargetingCriteria.include.and = newTargetingCriteria.include.and.filter((g: any) => g !== facetGroup);
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Apply EXCLUDES changes
+        if (excludesChanges) {
+          // Initialize exclude.or if it doesn't exist
+          if (!newTargetingCriteria.exclude) {
+            newTargetingCriteria.exclude = { or: {} };
+          }
+          if (!newTargetingCriteria.exclude.or) {
+            newTargetingCriteria.exclude.or = {};
+          }
+
+          // Process additions
+          if (excludesChanges.add) {
+            for (const [facetKey, urnsToAdd] of Object.entries(excludesChanges.add)) {
+              if (urnsToAdd.length === 0) continue;
+
+              const facetUrn = this.getFacetUrnFromKey(facetKey);
+              console.log(`[Campaign ${cleanCampaignId}] Adding ${urnsToAdd.length} ${facetKey} to excludes`);
+
+              // Get current excludes for this facet
+              const currentUrns = new Set(newTargetingCriteria.exclude.or[facetUrn] || []);
+              urnsToAdd.forEach(urn => currentUrns.add(urn));
+              newTargetingCriteria.exclude.or[facetUrn] = Array.from(currentUrns);
+
+              // Validate 100-item limit
+              if (newTargetingCriteria.exclude.or[facetUrn].length > 100) {
+                throw new Error(`${facetKey} exclusions would exceed LinkedIn's 100-item limit (${newTargetingCriteria.exclude.or[facetUrn].length} items)`);
+              }
+            }
+          }
+
+          // Process removals
+          if (excludesChanges.remove) {
+            for (const [facetKey, urnsToRemove] of Object.entries(excludesChanges.remove)) {
+              if (urnsToRemove.length === 0) continue;
+
+              const facetUrn = this.getFacetUrnFromKey(facetKey);
+              console.log(`[Campaign ${cleanCampaignId}] Removing ${urnsToRemove.length} ${facetKey} from excludes`);
+
+              if (newTargetingCriteria.exclude.or[facetUrn]) {
+                // Remove specified URNs
+                const urnsToRemoveSet = new Set(urnsToRemove);
+                newTargetingCriteria.exclude.or[facetUrn] = newTargetingCriteria.exclude.or[facetUrn].filter((urn: string) => 
+                  !urnsToRemoveSet.has(urn)
+                );
+
+                // Remove the facet if empty
+                if (newTargetingCriteria.exclude.or[facetUrn].length === 0) {
+                  delete newTargetingCriteria.exclude.or[facetUrn];
+                }
+              }
+            }
+          }
+        }
+
+        // Build the patch structure
+        const patchData = {
+          patch: {
+            $set: {
+              targetingCriteria: newTargetingCriteria
+            }
+          }
+        };
+
+        console.log(`[Campaign ${cleanCampaignId}] New targeting:`, JSON.stringify(newTargetingCriteria, null, 2));
+
+        // Update the campaign
+        const response = await this.client.post(
+          `/adAccounts/${accountId}/adCampaigns/${cleanCampaignId}`,
+          patchData,
+          {
+            headers: {
+              'X-RestLi-Method': 'PARTIAL_UPDATE'
+            }
+          }
+        );
+
+        console.log(`[Campaign ${cleanCampaignId}] Update successful: ${response.status}`);
+        results.successful.push(campaignId);
+
+      } catch (error: any) {
+        console.error(`[Campaign ${campaignId}] Update failed:`, error);
+        
+        let errorMessage = 'Unknown error';
+        if (error.response?.data) {
+          errorMessage = error.response.data.message || error.response.statusText || errorMessage;
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        results.failed.push({
+          campaignId: String(campaignId),
+          error: errorMessage
+        });
+      }
+    }
+
+    console.log(`[LinkedIn API] Changes-based update completed. Success: ${results.successful.length}, Failed: ${results.failed.length}`);
+    return results;
+  }
+
+  // Helper method to convert facet key to full URN
+  private getFacetUrnFromKey(facetKey: string): string {
+    const urnMap: Record<string, string> = {
+      'industries': 'urn:li:adTargetingFacet:industries',
+      'jobFunctions': 'urn:li:adTargetingFacet:jobFunctions',
+      'titles': 'urn:li:adTargetingFacet:titles',
+      'employers': 'urn:li:adTargetingFacet:employers',
+      'seniorities': 'urn:li:adTargetingFacet:seniorities',
+      'skills': 'urn:li:adTargetingFacet:skills'
+    };
+    return urnMap[facetKey] || facetKey;
   }
 
   // Helper method to get date string for API calls
