@@ -1026,7 +1026,8 @@ export class LinkedInAPI {
       'urn:li:adTargetingFacet:titles': 'titles',
       'urn:li:adTargetingFacet:employers': 'employers',
       'urn:li:adTargetingFacet:seniorities': 'seniorities',
-      'urn:li:adTargetingFacet:skills': 'skills'
+      'urn:li:adTargetingFacet:skills': 'skills',
+      'urn:li:adTargetingFacet:memberBehaviors': 'memberBehaviors'
     };
     return keyMap[facetUrn] || facetUrn;
   }
@@ -1512,7 +1513,8 @@ export class LinkedInAPI {
       'titles': 'urn:li:adTargetingFacet:titles',
       'employers': 'urn:li:adTargetingFacet:employers',
       'seniorities': 'urn:li:adTargetingFacet:seniorities',
-      'skills': 'urn:li:adTargetingFacet:skills'
+      'skills': 'urn:li:adTargetingFacet:skills',
+      'memberBehaviors': 'urn:li:adTargetingFacet:memberBehaviors'
     };
     return urnMap[facetKey] || facetKey;
   }
