@@ -29,7 +29,13 @@ export async function POST(request: NextRequest) {
     
     return NextResponse.json({
       success: true,
-      commonTargeting: result
+      commonTargeting: {
+        commonIncludes: result.commonIncludes,
+        commonExcludes: result.commonExcludes,
+        perCampaignIncludes: result.perCampaignIncludes,
+        perCampaignExcludes: result.perCampaignExcludes,
+        allCampaignIds: result.allCampaignIds
+      }
     });
   } catch (error) {
     console.error('Error in common targeting:', error);
@@ -38,4 +44,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
-} 
+}

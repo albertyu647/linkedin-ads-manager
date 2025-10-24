@@ -535,6 +535,32 @@ export class LinkedInAPI {
   // Get targeting entities for a facet
   async getTargetingEntities(facetUrn: string, query?: string): Promise<TargetingEntity[]> {
     try {
+      // Handle staffCountRanges (company sizes) as static values
+      if (facetUrn === 'urn:li:adTargetingFacet:staffCountRanges') {
+        const companySizes: TargetingEntity[] = [
+          { urn: 'urn:li:staffCountRange:(1,1)', name: 'Self-employed', id: '(1,1)' },
+          { urn: 'urn:li:staffCountRange:(2,10)', name: '1-10 employees', id: '(2,10)' },
+          { urn: 'urn:li:staffCountRange:(11,50)', name: '11-50 employees', id: '(11,50)' },
+          { urn: 'urn:li:staffCountRange:(51,200)', name: '51-200 employees', id: '(51,200)' },
+          { urn: 'urn:li:staffCountRange:(201,500)', name: '201-500 employees', id: '(201,500)' },
+          { urn: 'urn:li:staffCountRange:(501,1000)', name: '501-1,000 employees', id: '(501,1000)' },
+          { urn: 'urn:li:staffCountRange:(1001,5000)', name: '1,001-5,000 employees', id: '(1001,5000)' },
+          { urn: 'urn:li:staffCountRange:(5001,10000)', name: '5,001-10,000 employees', id: '(5001,10000)' },
+          { urn: 'urn:li:staffCountRange:(10001,-1)', name: '10,001+ employees', id: '(10001,-1)' }
+        ];
+
+        // Filter by query if provided
+        if (query && query.length >= 1) {
+          const lowercaseQuery = query.toLowerCase();
+          return companySizes.filter(size => 
+            size.name.toLowerCase().includes(lowercaseQuery) ||
+            (size.id && size.id.includes(query))
+          );
+        }
+
+        return companySizes;
+      }
+
       // First try to get from local database
       const linkedInEntityDB = (await import('@/lib/linkedin-entity-db')).default;
       
@@ -620,6 +646,9 @@ export class LinkedInAPI {
   async getCommonTargeting(campaignIds: string[], accountId: string): Promise<{
     commonIncludes: Record<string, TargetingEntity[]>;
     commonExcludes: Record<string, TargetingEntity[]>;
+    perCampaignIncludes: Record<string, string[]>; // URN -> campaign IDs that have it
+    perCampaignExcludes: Record<string, string[]>; // URN -> campaign IDs that have it
+    allCampaignIds: string[]; // List of all campaign IDs for reference
   }> {
     console.log(`[LinkedIn API] Fetching common targeting for ${campaignIds.length} campaigns`);
 
@@ -823,9 +852,48 @@ export class LinkedInAPI {
       excludes: Object.keys(resolvedCommonExcludes).length
     });
     
+    // Step 5: Build per-campaign maps (which campaigns have which targeting values)
+    const perCampaignIncludes: Record<string, string[]> = {};
+    const perCampaignExcludes: Record<string, string[]> = {};
+    
+    // For each campaign, track which URNs it has
+    campaignIds.forEach((campaignId, index) => {
+      if (index >= allCampaignTargeting.length) return;
+      
+      const targeting = allCampaignTargeting[index];
+      
+      // Track includes
+      Object.entries(targeting.includes).forEach(([facetUrn, urns]) => {
+        urns.forEach(urn => {
+          if (!perCampaignIncludes[urn]) {
+            perCampaignIncludes[urn] = [];
+          }
+          perCampaignIncludes[urn].push(campaignId);
+        });
+      });
+      
+      // Track excludes
+      Object.entries(targeting.excludes).forEach(([facetUrn, urns]) => {
+        urns.forEach(urn => {
+          if (!perCampaignExcludes[urn]) {
+            perCampaignExcludes[urn] = [];
+          }
+          perCampaignExcludes[urn].push(campaignId);
+        });
+      });
+    });
+    
+    console.log(`[LinkedIn API] Per-campaign mapping built:`, {
+      includeUrns: Object.keys(perCampaignIncludes).length,
+      excludeUrns: Object.keys(perCampaignExcludes).length
+    });
+    
     return {
       commonIncludes: resolvedCommonIncludes,
-      commonExcludes: resolvedCommonExcludes
+      commonExcludes: resolvedCommonExcludes,
+      perCampaignIncludes,
+      perCampaignExcludes,
+      allCampaignIds: campaignIds
     };
   }
 
@@ -1027,7 +1095,8 @@ export class LinkedInAPI {
       'urn:li:adTargetingFacet:employers': 'employers',
       'urn:li:adTargetingFacet:seniorities': 'seniorities',
       'urn:li:adTargetingFacet:skills': 'skills',
-      'urn:li:adTargetingFacet:memberBehaviors': 'memberBehaviors'
+      'urn:li:adTargetingFacet:memberBehaviors': 'memberBehaviors',
+      'urn:li:adTargetingFacet:staffCountRanges': 'staffCountRanges'
     };
     return keyMap[facetUrn] || facetUrn;
   }
@@ -1514,7 +1583,8 @@ export class LinkedInAPI {
       'employers': 'urn:li:adTargetingFacet:employers',
       'seniorities': 'urn:li:adTargetingFacet:seniorities',
       'skills': 'urn:li:adTargetingFacet:skills',
-      'memberBehaviors': 'urn:li:adTargetingFacet:memberBehaviors'
+      'memberBehaviors': 'urn:li:adTargetingFacet:memberBehaviors',
+      'staffCountRanges': 'urn:li:adTargetingFacet:staffCountRanges'
     };
     return urnMap[facetKey] || facetKey;
   }

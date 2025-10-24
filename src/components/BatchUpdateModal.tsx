@@ -13,6 +13,9 @@ interface BatchUpdateModalProps {
 interface CommonTargeting {
   commonIncludes: Record<string, TargetingEntity[]>;
   commonExcludes: Record<string, TargetingEntity[]>;
+  perCampaignIncludes: Record<string, string[]>; // URN -> campaign IDs that have it
+  perCampaignExcludes: Record<string, string[]>; // URN -> campaign IDs that have it
+  allCampaignIds: string[];
 }
 
 interface SelectedTargeting {
@@ -23,6 +26,7 @@ interface SelectedTargeting {
   seniorities: TargetingEntity[];
   skills: TargetingEntity[];
   memberBehaviors: TargetingEntity[];
+  staffCountRanges: TargetingEntity[];
 }
 
 interface UpdateResult {
@@ -44,7 +48,8 @@ const TARGETING_FACETS = {
   employers: { urn: 'urn:li:adTargetingFacet:employers', label: 'Companies' },
   seniorities: { urn: 'urn:li:adTargetingFacet:seniorities', label: 'Seniorities' },
   skills: { urn: 'urn:li:adTargetingFacet:skills', label: 'Skills' },
-  memberBehaviors: { urn: 'urn:li:adTargetingFacet:memberBehaviors', label: 'Member Behaviors' }
+  memberBehaviors: { urn: 'urn:li:adTargetingFacet:memberBehaviors', label: 'Member Behaviors' },
+  staffCountRanges: { urn: 'urn:li:adTargetingFacet:staffCountRanges', label: 'Company Size' }
 };
 
 export default function BatchUpdateModal({ campaignIds, accountId, onClose, onComplete }: BatchUpdateModalProps) {
@@ -60,7 +65,8 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
     employers: [],
     seniorities: [],
     skills: [],
-    memberBehaviors: []
+    memberBehaviors: [],
+    staffCountRanges: []
   };
 
   const [includesTargeting, setIncludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
@@ -70,29 +76,51 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const [originalIncludesTargeting, setOriginalIncludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
   const [originalExcludesTargeting, setOriginalExcludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
   
+  // Track pending removals (entities that exist in some campaigns and user wants to remove)
+  const [pendingIncludesRemovals, setPendingIncludesRemovals] = useState<SelectedTargeting>(defaultTargeting);
+  const [pendingExcludesRemovals, setPendingExcludesRemovals] = useState<SelectedTargeting>(defaultTargeting);
+  
   const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
   const [rawSearchResults, setRawSearchResults] = useState<Record<string, TargetingEntity[]>>({});
   const [loading, setLoading] = useState(false);
 
-  // Computed search results that filter out already selected entities
+  // Computed search results - shows ALL entities with smart action buttons
   const searchResults = useMemo(() => {
     const filtered: Record<string, TargetingEntity[]> = {};
     
     Object.entries(rawSearchResults).forEach(([facetKey, entities]) => {
       const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
-      const oppositeTargeting = activeTab === 'includes' ? excludesTargeting : includesTargeting;
       
-      // Get URNs that should be excluded (already selected in current or opposite targeting)
+      // Get URNs that are currently selected in UI (chips) for current tab only
       const currentlySelectedUrns = currentTargeting[facetKey as keyof SelectedTargeting].map((entity: TargetingEntity) => entity.urn);
-      const oppositeSelectedUrns = oppositeTargeting[facetKey as keyof SelectedTargeting].map((entity: TargetingEntity) => entity.urn);
-      const excludedUrns = new Set([...currentlySelectedUrns, ...oppositeSelectedUrns]);
       
-      // Filter out already selected entities
-      filtered[facetKey] = entities.filter((entity: TargetingEntity) => !excludedUrns.has(entity.urn));
+      // Show all entities except those fully added to current tab
+      filtered[facetKey] = entities.filter((entity: TargetingEntity) => {
+        // If we have per-campaign data, use smart filtering
+        if (commonTargeting) {
+          const perCampaignData = activeTab === 'includes' 
+            ? commonTargeting.perCampaignIncludes 
+            : commonTargeting.perCampaignExcludes;
+          
+          const campaignsWithEntity = perCampaignData[entity.urn] || [];
+          const inAllCampaigns = campaignsWithEntity.length === campaignIds.length;
+          
+          // Only filter out if in all campaigns AND in UI selection (nothing to do)
+          if (inAllCampaigns && currentlySelectedUrns.includes(entity.urn)) {
+            return false;
+          }
+          
+          // Show everything else - action buttons will handle add/remove logic
+          return true;
+        }
+        
+        // Fallback: filter out only if in current UI selection
+        return !currentlySelectedUrns.includes(entity.urn);
+      });
     });
     
     return filtered;
-  }, [rawSearchResults, includesTargeting, excludesTargeting, activeTab]);
+  }, [rawSearchResults, includesTargeting, excludesTargeting, activeTab, commonTargeting, campaignIds]);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updateComplete, setUpdateComplete] = useState(false);
@@ -215,17 +243,27 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const addTargetingEntity = (facetKey: string, entity: TargetingEntity) => {
     const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
     const setTargeting = activeTab === 'includes' ? setIncludesTargeting : setExcludesTargeting;
+    const oppositeTargeting = activeTab === 'includes' ? excludesTargeting : includesTargeting;
+    const setOppositeTargeting = activeTab === 'includes' ? setExcludesTargeting : setIncludesTargeting;
     
-    // Check if entity already exists
+    // Check if entity already exists in current tab
     const existing = currentTargeting[facetKey as keyof SelectedTargeting].find(e => e.urn === entity.urn);
     if (existing) return;
     
+    // IMPORTANT: If entity exists in opposite tab, remove it first to avoid conflicts
+    const existingInOpposite = oppositeTargeting[facetKey as keyof SelectedTargeting].find(e => e.urn === entity.urn);
+    if (existingInOpposite) {
+      setOppositeTargeting(prev => ({
+        ...prev,
+        [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((e: TargetingEntity) => e.urn !== entity.urn)
+      }));
+    }
+    
+    // Add to current tab
     setTargeting(prev => ({
       ...prev,
       [facetKey]: [...prev[facetKey as keyof SelectedTargeting], entity]
     }));
-    
-    // No need to manipulate search results - computed searchResults will auto-update
   };
 
   const addAllSearchResults = (facetKey: string) => {
@@ -252,15 +290,69 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
     // No need to manipulate search results - computed searchResults will auto-update
   };
 
-  const removeTargetingEntity = (facetKey: string, entityUrn: string) => {
+  const removeTargetingEntity = (facetKey: string, entityUrn: string, entity?: TargetingEntity) => {
+    const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
     const setTargeting = activeTab === 'includes' ? setIncludesTargeting : setExcludesTargeting;
+    const setPendingRemovals = activeTab === 'includes' ? setPendingIncludesRemovals : setPendingExcludesRemovals;
     
-    setTargeting(prev => ({
+    // Check if this entity is in the common chips (currently selected)
+    const existingInCurrent = currentTargeting[facetKey as keyof SelectedTargeting].find(e => e.urn === entityUrn);
+    
+    if (existingInCurrent) {
+      // Remove from current targeting (existing behavior for common chips)
+      setTargeting(prev => ({
+        ...prev,
+        [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((e: TargetingEntity) => e.urn !== entityUrn)
+      }));
+    } else if (entity) {
+      // Add to pending removals for visual feedback
+      setPendingRemovals(prev => {
+        const existing = prev[facetKey as keyof SelectedTargeting].find(e => e.urn === entityUrn);
+        if (existing) return prev; // Already pending removal
+        
+        return {
+          ...prev,
+          [facetKey]: [...prev[facetKey as keyof SelectedTargeting], entity]
+        };
+      });
+    }
+  };
+
+  const cancelRemoval = (facetKey: string, entityUrn: string) => {
+    const setPendingRemovals = activeTab === 'includes' ? setPendingIncludesRemovals : setPendingExcludesRemovals;
+    
+    setPendingRemovals(prev => ({
       ...prev,
-      [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((entity: TargetingEntity) => entity.urn !== entityUrn)
+      [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((e: TargetingEntity) => e.urn !== entityUrn)
     }));
+  };
+
+  // Get campaign status for a specific entity
+  const getEntityCampaignStatus = (entityUrn: string): { 
+    inCurrentTab: string[];
+    inOppositeTab: string[];
+    total: number;
+  } => {
+    if (!commonTargeting) {
+      return { inCurrentTab: [], inOppositeTab: [], total: campaignIds.length };
+    }
+
+    const perCampaignData = activeTab === 'includes' 
+      ? commonTargeting.perCampaignIncludes 
+      : commonTargeting.perCampaignExcludes;
     
-    // No need to refresh search results - computed searchResults will auto-update
+    const oppositePerCampaignData = activeTab === 'includes'
+      ? commonTargeting.perCampaignExcludes
+      : commonTargeting.perCampaignIncludes;
+
+    const inCurrentTab = perCampaignData[entityUrn] || [];
+    const inOppositeTab = oppositePerCampaignData[entityUrn] || [];
+
+    return {
+      inCurrentTab,
+      inOppositeTab,
+      total: campaignIds.length
+    };
   };
 
   const updateCampaignStatus = (campaignId: string, status: CampaignProgress['status'], error?: string) => {
@@ -287,6 +379,7 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       Object.keys(TARGETING_FACETS).forEach((facetKey) => {
         const currentUrns = new Set(includesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
         const originalUrns = new Set(originalIncludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        const pendingRemovalUrns = new Set(pendingIncludesRemovals[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
         
         // Additions: in current but not in original
         const additions = [...currentUrns].filter(urn => !originalUrns.has(urn));
@@ -294,10 +387,13 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
           includesChanges.add[facetKey] = additions;
         }
         
-        // Removals: in original but not in current
-        const removals = [...originalUrns].filter(urn => !currentUrns.has(urn));
-        if (removals.length > 0) {
-          includesChanges.remove[facetKey] = removals;
+        // Removals: (in original but not in current) OR in pending removals
+        const removalsFromOriginal = [...originalUrns].filter(urn => !currentUrns.has(urn));
+        const removalsFromPending = [...pendingRemovalUrns];
+        const allRemovals = [...new Set([...removalsFromOriginal, ...removalsFromPending])];
+        
+        if (allRemovals.length > 0) {
+          includesChanges.remove[facetKey] = allRemovals;
         }
       });
       
@@ -305,6 +401,7 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       Object.keys(TARGETING_FACETS).forEach((facetKey) => {
         const currentUrns = new Set(excludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
         const originalUrns = new Set(originalExcludesTargeting[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
+        const pendingRemovalUrns = new Set(pendingExcludesRemovals[facetKey as keyof SelectedTargeting].map((e: TargetingEntity) => e.urn));
         
         // Additions: in current but not in original
         const additions = [...currentUrns].filter(urn => !originalUrns.has(urn));
@@ -312,10 +409,13 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
           excludesChanges.add[facetKey] = additions;
         }
         
-        // Removals: in original but not in current
-        const removals = [...originalUrns].filter(urn => !currentUrns.has(urn));
-        if (removals.length > 0) {
-          excludesChanges.remove[facetKey] = removals;
+        // Removals: (in original but not in current) OR in pending removals
+        const removalsFromOriginal = [...originalUrns].filter(urn => !currentUrns.has(urn));
+        const removalsFromPending = [...pendingRemovalUrns];
+        const allRemovals = [...new Set([...removalsFromOriginal, ...removalsFromPending])];
+        
+        if (allRemovals.length > 0) {
+          excludesChanges.remove[facetKey] = allRemovals;
         }
       });
       
@@ -640,30 +740,64 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                       </span>
                     </div>
                     
-                    {/* Current chips */}
-                    {entities && entities.length > 0 && (
-                      <div className="mb-3">
-                        <div className="flex flex-wrap gap-2">
-                          {entities.map((entity: TargetingEntity) => (
-                            <span
-                              key={entity.urn}
-                              className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                            >
-                              {entity.name}
-                              <button
-                                type="button"
-                                onClick={() => removeTargetingEntity(facetKey, entity.urn)}
-                                className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full text-blue-400 hover:bg-blue-200 hover:text-blue-500"
+                    {/* Current chips and pending removals */}
+                    {(() => {
+                      const pendingRemovals = activeTab === 'includes' ? pendingIncludesRemovals : pendingExcludesRemovals;
+                      const removalEntities = pendingRemovals[facetKey as keyof SelectedTargeting];
+                      const hasChips = (entities && entities.length > 0) || (removalEntities && removalEntities.length > 0);
+                      
+                      return hasChips && (
+                        <div className="mb-3">
+                          <div className="flex flex-wrap gap-2">
+                            {/* Common chips (in all campaigns) */}
+                            {entities.map((entity: TargetingEntity) => (
+                              <span
+                                key={entity.urn}
+                                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
                               >
-                                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                                </svg>
-                              </button>
-                            </span>
-                          ))}
+                                {entity.name}
+                                <button
+                                  type="button"
+                                  onClick={() => removeTargetingEntity(facetKey, entity.urn)}
+                                  className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full text-blue-400 hover:bg-blue-200 hover:text-blue-500"
+                                >
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                  </svg>
+                                </button>
+                              </span>
+                            ))}
+                            
+                            {/* Pending removal chips (will be removed from some campaigns) */}
+                            {removalEntities && removalEntities.map((entity: TargetingEntity) => {
+                              const status = getEntityCampaignStatus(entity.urn);
+                              return (
+                                <span
+                                  key={entity.urn}
+                                  className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-300"
+                                  title={`Will remove from ${status.inCurrentTab.length} campaign${status.inCurrentTab.length !== 1 ? 's' : ''}`}
+                                >
+                                  <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                  {entity.name}
+                                  <button
+                                    type="button"
+                                    onClick={() => cancelRemoval(facetKey, entity.urn)}
+                                    className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full text-red-400 hover:bg-red-200 hover:text-red-600"
+                                    title="Cancel removal"
+                                  >
+                                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                    </svg>
+                                  </button>
+                                </span>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                     
                     {/* Search input */}
                     <div className="relative">
@@ -706,16 +840,64 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                             })()}
                           </div>
                           
-                          {/* Individual results */}
-                          {results.map((entity) => (
-                            <button
-                              key={entity.urn}
-                              onClick={() => addTargetingEntity(facetKey, entity)}
-                              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 focus:outline-none focus:bg-gray-100 border-b border-gray-100 last:border-b-0"
-                            >
-                              {entity.name}
-                            </button>
-                          ))}
+                          {/* Individual results with campaign status */}
+                          {results.map((entity) => {
+                            const status = getEntityCampaignStatus(entity.urn);
+                            const inCurrentTabCount = status.inCurrentTab.length;
+                            const inOppositeTabCount = status.inOppositeTab.length;
+                            const notInCurrentTab = status.total - inCurrentTabCount;
+                            
+                            // Determine which actions are available
+                            const canAddToMissing = notInCurrentTab > 0;
+                            const canRemoveFromExisting = inCurrentTabCount > 0;
+                            const isInOppositeTab = inOppositeTabCount > 0;
+
+                            return (
+                              <div key={entity.urn} className="px-3 py-2 border-b border-gray-100 last:border-b-0">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-sm font-medium text-gray-900 truncate">
+                                      {entity.name}
+                                    </div>
+                                    {commonTargeting && (
+                                      <div className="flex items-center gap-2 mt-1">
+                                        {inCurrentTabCount > 0 && (
+                                          <span className="text-xs text-gray-600">
+                                            In {inCurrentTabCount}/{status.total} campaigns
+                                          </span>
+                                        )}
+                                        {isInOppositeTab && (
+                                          <span className="text-xs text-orange-600">
+                                            ⚠ In {inOppositeTabCount} {activeTab === 'includes' ? 'excludes' : 'includes'}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-1 flex-shrink-0">
+                                    {canAddToMissing && (
+                                      <button
+                                        onClick={() => addTargetingEntity(facetKey, entity)}
+                                        className="px-2 py-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded hover:bg-green-100 focus:outline-none"
+                                        title={`Add to ${notInCurrentTab} campaign${notInCurrentTab !== 1 ? 's' : ''}`}
+                                      >
+                                        + Add
+                                      </button>
+                                    )}
+                                    {canRemoveFromExisting && (
+                                      <button
+                                        onClick={() => removeTargetingEntity(facetKey, entity.urn, entity)}
+                                        className="px-2 py-1 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded hover:bg-red-100 focus:outline-none"
+                                        title={`Remove from ${inCurrentTabCount} campaign${inCurrentTabCount !== 1 ? 's' : ''}`}
+                                      >
+                                        - Remove
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
