@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import linkedInEntityDB from '@/lib/linkedin-entity-db';
 
-export async function POST(request: NextRequest) {
+export async function POST(_request: NextRequest) {
   try {
     const cookieStore = await cookies();
     const accessToken = cookieStore.get('linkedin_access_token')?.value;
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     // Get database stats
     const stats = await linkedInEntityDB.getDatabaseStats();
@@ -69,4 +69,4 @@ export async function GET(request: NextRequest) {
       { status: 500 }
     );
   }
-} 
+}
