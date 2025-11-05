@@ -21,7 +21,7 @@ interface CampaignListProps {
   accountId: string;
 }
 
-type SortField = 'name' | 'status' | 'dailyBudget' | 'unitCost' | 'spent' | 'impressions' | 'clicks' | 'leads' | 'spendSinceAdjustment';
+type SortField = 'name' | 'status' | 'dailyBudget' | 'unitCost' | 'spent' | 'impressions' | 'clicks' | 'leads' | 'costPerLead' | 'spendSinceAdjustment';
 type SortDirection = 'asc' | 'desc';
 
 export default function CampaignList({
@@ -344,6 +344,16 @@ export default function CampaignList({
           aValue = (a as any).leads || 0;
           bValue = (b as any).leads || 0;
           break;
+        case 'costPerLead':
+          // Calculate cost per lead for sorting
+          const aLeads = (a as any).leads || 0;
+          const bLeads = (b as any).leads || 0;
+          const aSpent = parseFloat(a.spent?.amount || '0');
+          const bSpent = parseFloat(b.spent?.amount || '0');
+          
+          aValue = aLeads > 0 ? aSpent / aLeads : Infinity;
+          bValue = bLeads > 0 ? bSpent / bLeads : Infinity;
+          break;
         case 'spendSinceAdjustment':
           // Calculate spend since last adjustment for sorting
           const aAdjustment = a.id ? bidAdjustments.get(a.id) : undefined;
@@ -459,8 +469,8 @@ export default function CampaignList({
   }
 
   return (
-    <div className="bg-white shadow rounded-lg overflow-hidden">
-      <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div className="bg-white shadow rounded-lg overflow-visible">
+      <div className="px-4 py-5 sm:px-6 border-b border-gray-200 bg-white">
         <div className="flex items-center justify-between">
           <h3 className="text-lg leading-6 font-medium text-gray-900">
             Campaigns ({sortedCampaigns.length})
@@ -544,13 +554,13 @@ export default function CampaignList({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overflow-y-auto max-h-[90vh] relative border-t border-gray-200">
         <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
+          <thead className="bg-gray-50 sticky top-0 z-20 shadow-sm">
             <tr>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('name')}
               >
                 <div className="flex items-center space-x-1">
@@ -560,7 +570,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('status')}
               >
                 <div className="flex items-center space-x-1">
@@ -570,7 +580,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('dailyBudget')}
               >
                 <div className="flex items-center space-x-1">
@@ -580,7 +590,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('unitCost')}
               >
                 <div className="flex items-center space-x-1">
@@ -590,7 +600,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('spent')}
               >
                 <div className="flex items-center space-x-1">
@@ -600,7 +610,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('impressions')}
               >
                 <div className="flex items-center space-x-1">
@@ -610,7 +620,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('clicks')}
               >
                 <div className="flex items-center space-x-1">
@@ -620,7 +630,7 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('leads')}
               >
                 <div className="flex items-center space-x-1">
@@ -630,7 +640,17 @@ export default function CampaignList({
               </th>
               <th 
                 scope="col" 
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors"
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
+                onClick={() => handleSort('costPerLead')}
+              >
+                <div className="flex items-center space-x-1">
+                  <span>Cost/Lead</span>
+                  {getSortIcon('costPerLead')}
+                </div>
+              </th>
+              <th 
+                scope="col" 
+                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors bg-gray-50"
                 onClick={() => handleSort('spendSinceAdjustment')}
               >
                 <div className="flex items-center space-x-1">
@@ -695,6 +715,17 @@ export default function CampaignList({
               </td>
               <td className="px-6 py-4 text-sm text-gray-900">
                 {sortedCampaigns.reduce((sum, c) => sum + ((c as any).leads || 0), 0).toLocaleString()}
+              </td>
+              <td className="px-6 py-4 text-sm text-gray-900">
+                {(() => {
+                  const totalSpent = sortedCampaigns.reduce((sum, c) => sum + parseFloat(c.spent?.amount || '0'), 0);
+                  const totalLeads = sortedCampaigns.reduce((sum, c) => sum + ((c as any).leads || 0), 0);
+                  if (totalLeads === 0) return '-';
+                  const avgCostPerLead = totalSpent / totalLeads;
+                  const campaignWithSpend = sortedCampaigns.find(c => c.spent?.currencyCode);
+                  const currency = campaignWithSpend?.spent?.currencyCode || 'CAD';
+                  return `${currency} ${avgCostPerLead.toFixed(2)}`;
+                })()}
               </td>
               <td className="px-6 py-4 text-sm text-gray-900">
                 {(() => {
@@ -790,6 +821,15 @@ export default function CampaignList({
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {(campaign as any).leads?.toLocaleString() || '-'}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {(() => {
+                    const leads = (campaign as any).leads || 0;
+                    const spent = parseFloat(campaign.spent?.amount || '0');
+                    if (leads === 0) return '-';
+                    const costPerLead = spent / leads;
+                    return `${campaign.spent?.currencyCode || 'CAD'} ${costPerLead.toFixed(2)}`;
+                  })()}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   {campaign.id && (() => {

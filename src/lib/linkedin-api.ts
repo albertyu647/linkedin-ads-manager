@@ -561,6 +561,28 @@ export class LinkedInAPI {
         return companySizes;
       }
 
+      // Handle revenue (company revenue ranges) as static values
+      if (facetUrn === 'urn:li:adTargetingFacet:revenue') {
+        const revenueRanges: TargetingEntity[] = [
+          { urn: 'urn:li:revenue:(-2147483647,1)', name: 'Under $1M', id: '(-2147483647,1)' },
+          { urn: 'urn:li:revenue:(1,10)', name: '$1M-$10M', id: '(1,10)' },
+          { urn: 'urn:li:revenue:(10,100)', name: '$10M-$100M', id: '(10,100)' },
+          { urn: 'urn:li:revenue:(100,1000)', name: '$100M-$1B', id: '(100,1000)' },
+          { urn: 'urn:li:revenue:(1000,2147483647)', name: '$1B+', id: '(1000,2147483647)' }
+        ];
+
+        // Filter by query if provided
+        if (query && query.length >= 1) {
+          const lowercaseQuery = query.toLowerCase();
+          return revenueRanges.filter(range => 
+            range.name.toLowerCase().includes(lowercaseQuery) ||
+            (range.id && range.id.includes(query))
+          );
+        }
+
+        return revenueRanges;
+      }
+
       // First try to get from local database
       const linkedInEntityDB = (await import('@/lib/linkedin-entity-db')).default;
       
@@ -1096,7 +1118,10 @@ export class LinkedInAPI {
       'urn:li:adTargetingFacet:seniorities': 'seniorities',
       'urn:li:adTargetingFacet:skills': 'skills',
       'urn:li:adTargetingFacet:memberBehaviors': 'memberBehaviors',
-      'urn:li:adTargetingFacet:staffCountRanges': 'staffCountRanges'
+      'urn:li:adTargetingFacet:staffCountRanges': 'staffCountRanges',
+      'urn:li:adTargetingFacet:locations': 'locations',
+      'urn:li:adTargetingFacet:profileLocations': 'locations',
+      'urn:li:adTargetingFacet:revenue': 'revenue'
     };
     return keyMap[facetUrn] || facetUrn;
   }
@@ -1584,7 +1609,9 @@ export class LinkedInAPI {
       'seniorities': 'urn:li:adTargetingFacet:seniorities',
       'skills': 'urn:li:adTargetingFacet:skills',
       'memberBehaviors': 'urn:li:adTargetingFacet:memberBehaviors',
-      'staffCountRanges': 'urn:li:adTargetingFacet:staffCountRanges'
+      'staffCountRanges': 'urn:li:adTargetingFacet:staffCountRanges',
+      'locations': 'urn:li:adTargetingFacet:profileLocations',
+      'revenue': 'urn:li:adTargetingFacet:revenue'
     };
     return urnMap[facetKey] || facetKey;
   }

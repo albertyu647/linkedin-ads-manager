@@ -351,7 +351,7 @@ export default function Dashboard() {
       </div>
 
       {/* Account Selection */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="mb-6">
           <label htmlFor="account-select" className="block text-sm font-medium text-gray-700 mb-2">
             Select Ad Account

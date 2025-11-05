@@ -27,6 +27,8 @@ interface SelectedTargeting {
   skills: TargetingEntity[];
   memberBehaviors: TargetingEntity[];
   staffCountRanges: TargetingEntity[];
+  locations: TargetingEntity[];
+  revenue: TargetingEntity[];
 }
 
 interface UpdateResult {
@@ -49,7 +51,9 @@ const TARGETING_FACETS = {
   seniorities: { urn: 'urn:li:adTargetingFacet:seniorities', label: 'Seniorities' },
   skills: { urn: 'urn:li:adTargetingFacet:skills', label: 'Skills' },
   memberBehaviors: { urn: 'urn:li:adTargetingFacet:memberBehaviors', label: 'Member Behaviors' },
-  staffCountRanges: { urn: 'urn:li:adTargetingFacet:staffCountRanges', label: 'Company Size' }
+  staffCountRanges: { urn: 'urn:li:adTargetingFacet:staffCountRanges', label: 'Company Size' },
+  locations: { urn: 'urn:li:adTargetingFacet:profileLocations', label: 'Locations' },
+  revenue: { urn: 'urn:li:adTargetingFacet:revenue', label: 'Revenue' }
 };
 
 export default function BatchUpdateModal({ campaignIds, accountId, onClose, onComplete }: BatchUpdateModalProps) {
@@ -66,7 +70,9 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
     seniorities: [],
     skills: [],
     memberBehaviors: [],
-    staffCountRanges: []
+    staffCountRanges: [],
+    locations: [],
+    revenue: []
   };
 
   const [includesTargeting, setIncludesTargeting] = useState<SelectedTargeting>(defaultTargeting);
