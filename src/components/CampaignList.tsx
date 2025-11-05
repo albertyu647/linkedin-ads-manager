@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { LinkedInCampaign } from '@/types/linkedin';
 import { formatTimeSinceAdjustment } from '@/lib/bid-tracking';
+import { BidHistory } from '@/lib/client-storage';
 
 interface BidAdjustmentData {
   campaignId: string;
@@ -43,48 +44,36 @@ export default function CampaignList({
   const [showProgress, setShowProgress] = useState(false);
   const [campaignProgress, setCampaignProgress] = useState<Map<string, 'pending' | 'processing' | 'completed' | 'failed'>>(new Map());
 
-  // Fetch bid adjustments for all campaigns
+  // Load bid adjustments from client-side storage
   useEffect(() => {
-    const fetchBidAdjustments = async () => {
-      if (campaigns.length === 0) return;
-      
-      setLoadingAdjustments(true);
-      const adjustmentsMap = new Map<string, BidAdjustmentData>();
-      
-      try {
-        // Fetch adjustments for each campaign
-        const promises = campaigns.map(async (campaign) => {
-          if (!campaign.id) return;
-          
-          try {
-            const response = await fetch(`/api/campaigns/bid-history?campaignId=${campaign.id}`);
-            if (response.ok) {
-              const data = await response.json();
-              if (data.adjustment) {
-                adjustmentsMap.set(campaign.id, {
-                  campaignId: data.adjustment.campaignId,
-                  spentAtAdjustment: data.adjustment.spentAtAdjustment,
-                  spendSinceOct1AtAdjustment: data.adjustment.spendSinceOct1AtAdjustment || 0,
-                  adjustmentTimestamp: data.adjustment.adjustmentTimestamp,
-                  bidAdjustmentAmount: data.adjustment.bidAdjustmentAmount
-                });
-              }
-            }
-          } catch (err) {
-            console.error(`Failed to fetch bid adjustment for campaign ${campaign.id}:`, err);
-          }
-        });
-        
-        await Promise.all(promises);
-        setBidAdjustments(adjustmentsMap);
-      } catch (err) {
-        console.error('Failed to fetch bid adjustments:', err);
-      } finally {
-        setLoadingAdjustments(false);
-      }
-    };
+    if (campaigns.length === 0) return;
     
-    fetchBidAdjustments();
+    setLoadingAdjustments(true);
+    const adjustmentsMap = new Map<string, BidAdjustmentData>();
+    
+    try {
+      // Get all adjustments from client storage
+      campaigns.forEach((campaign) => {
+        if (!campaign.id) return;
+        
+        const adjustment = BidHistory.getLatest(campaign.id);
+        if (adjustment) {
+          adjustmentsMap.set(campaign.id, {
+            campaignId: adjustment.campaignId,
+            spentAtAdjustment: adjustment.spentAtAdjustment,
+            spendSinceOct1AtAdjustment: adjustment.spendSinceOct1AtAdjustment || 0,
+            adjustmentTimestamp: adjustment.adjustmentTimestamp,
+            bidAdjustmentAmount: adjustment.bidAdjustmentAmount
+          });
+        }
+      });
+      
+      setBidAdjustments(adjustmentsMap);
+    } catch (err) {
+      console.error('Failed to load bid adjustments from storage:', err);
+    } finally {
+      setLoadingAdjustments(false);
+    }
   }, [campaigns]);
 
   const handleSort = (field: SortField) => {
@@ -246,18 +235,15 @@ export default function CampaignList({
               console.error('Failed to fetch Oct 1 spend:', err);
             }
 
-            await fetch('/api/campaigns/bid-history', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                campaignId,
-                bidAdjustmentAmount: bidAdjustment,
-                oldBid,
-                newBid,
-                spentAtAdjustment: currentSpent,
-                spendSinceOct1AtAdjustment: spendSinceOct1,
-                accountId
-              })
+            // Record in client-side storage
+            BidHistory.record({
+              campaignId,
+              bidAdjustmentAmount: bidAdjustment,
+              oldBid,
+              newBid,
+              spentAtAdjustment: currentSpent,
+              spendSinceOct1AtAdjustment: spendSinceOct1,
+              accountId
             });
             
             updateCampaignProgress(campaignId, 'completed');

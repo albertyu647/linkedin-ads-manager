@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { LinkedInCampaign } from '@/types/linkedin';
+import { BidHistory } from '@/lib/client-storage';
 
 interface BulkBidAdjustmentModalProps {
   isOpen: boolean;
@@ -162,20 +163,16 @@ export default function BulkBidAdjustmentModal({
                 console.error('Failed to fetch Oct 1 spend:', err);
               }
               
-              // Save to database via API
+              // Save to client-side storage
               try {
-                await fetch('/api/campaigns/bid-history', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    campaignId,
-                    bidAdjustmentAmount: bidAdjustment,
-                    oldBid,
-                    newBid,
-                    spentAtAdjustment: currentSpent,
-                    spendSinceOct1AtAdjustment: spendSinceOct1,
-                    accountId
-                  })
+                BidHistory.record({
+                  campaignId,
+                  bidAdjustmentAmount: bidAdjustment,
+                  oldBid,
+                  newBid,
+                  spentAtAdjustment: currentSpent,
+                  spendSinceOct1AtAdjustment: spendSinceOct1,
+                  accountId
                 });
               } catch (err) {
                 console.error('Failed to record bid adjustment:', err);

@@ -7,7 +7,6 @@ import BatchUpdateModal from '@/components/BatchUpdateModal';
 import BulkBidAdjustmentModal from '@/components/BulkBidAdjustmentModal';
 import DateRangeFilter from '@/components/DateRangeFilter';
 import { DateRange, getDefaultDateRange } from '@/lib/date-ranges';
-import DatabaseManager from '@/components/DatabaseManager';
 
 export default function Dashboard() {
   const [accounts, setAccounts] = useState<LinkedInAccount[]>([]);
@@ -20,7 +19,6 @@ export default function Dashboard() {
   const [showBulkBidAdjustment, setShowBulkBidAdjustment] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeOnly, setActiveOnly] = useState<boolean>(true); // Default to active campaigns only
-  const [activeTab, setActiveTab] = useState<'campaigns' | 'database'>('campaigns');
   const [dateRange, setDateRange] = useState<DateRange>(() => {
     // Try to load saved date range from localStorage
     if (typeof window !== 'undefined') {
@@ -371,39 +369,8 @@ export default function Dashboard() {
           </select>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="border-b border-gray-200 mb-6">
-          <nav className="-mb-px flex space-x-8">
-            <button
-              onClick={() => setActiveTab('campaigns')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'campaigns'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Campaigns
-            </button>
-            <button
-              onClick={() => setActiveTab('database')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                activeTab === 'database'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              Database Manager
-            </button>
-          </nav>
-        </div>
-
-        {/* Database Manager Tab */}
-        {activeTab === 'database' && (
-          <DatabaseManager />
-        )}
-
-        {/* Campaigns Tab */}
-        {activeTab === 'campaigns' && selectedAccount && (
+        {/* Campaigns */}
+        {selectedAccount && (
           <>
             {/* Date Range Filter */}
             <DateRangeFilter
@@ -681,7 +648,7 @@ export default function Dashboard() {
         )}
 
         {/* Show account selection message when no account is selected */}
-        {activeTab === 'campaigns' && !selectedAccount && (
+        {!selectedAccount && (
           <div className="text-center py-12">
             <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h1a1 1 0 011 1v5m-4 0h4" />
