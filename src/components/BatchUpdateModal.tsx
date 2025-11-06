@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { TargetingEntity } from '@/types/linkedin';
+import { entityCache } from '@/lib/entity-cache';
 
 interface BatchUpdateModalProps {
   campaignIds: string[];
@@ -55,6 +56,74 @@ const TARGETING_FACETS = {
   locations: { urn: 'urn:li:adTargetingFacet:profileLocations', label: 'Locations' },
   revenue: { urn: 'urn:li:adTargetingFacet:revenue', label: 'Revenue' }
 };
+
+/**
+ * Resolve entity names using cache first, then API if needed
+ */
+async function resolveEntityNames(entities: TargetingEntity[]): Promise<TargetingEntity[]> {
+  if (entities.length === 0) return entities;
+  
+  // Check which entities need resolution (have placeholder names)
+  const needsResolution = entities.filter(entity => 
+    entity.name.includes('Job Title ') || 
+    entity.name.includes('Company ') ||
+    entity.name.includes('Industry ') ||
+    entity.name.includes('Job Function ') ||
+    entity.name.includes('Seniority ') ||
+    entity.name.includes('Skill ') ||
+    entity.name.includes('Entity ')
+  );
+  
+  if (needsResolution.length === 0) return entities;
+  
+  console.log(`[BatchUpdateModal] Resolving ${needsResolution.length} entity names`);
+  
+  // Check cache for all entities that need resolution
+  const cachedEntities = entityCache.getMany(needsResolution.map(e => e.urn));
+  const uncachedUrns = needsResolution
+    .filter(e => !cachedEntities[e.urn])
+    .map(e => e.urn);
+  
+  console.log(`[BatchUpdateModal] Found ${Object.keys(cachedEntities).length} in cache, ${uncachedUrns.length} need API resolution`);
+  
+  // Resolve uncached entities via API
+  let apiResolvedEntities: Record<string, TargetingEntity> = {};
+  if (uncachedUrns.length > 0) {
+    try {
+      const response = await fetch('/api/targeting/resolve-names', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ urns: uncachedUrns }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        apiResolvedEntities = data.entities || {};
+        
+        // Cache the resolved entities
+        if (Object.keys(apiResolvedEntities).length > 0) {
+          entityCache.setMany(apiResolvedEntities);
+          console.log(`[BatchUpdateModal] Cached ${Object.keys(apiResolvedEntities).length} newly resolved entities`);
+        }
+      } else {
+        console.error('[BatchUpdateModal] Failed to resolve entity names:', response.statusText);
+      }
+    } catch (error) {
+      console.error('[BatchUpdateModal] Error resolving entity names:', error);
+    }
+  }
+  
+  // Merge cached and API resolved entities
+  const resolvedEntities = { ...cachedEntities, ...apiResolvedEntities };
+  
+  // Return entities with resolved names
+  return entities.map(entity => {
+    const resolved = resolvedEntities[entity.urn];
+    return resolved || entity; // Use resolved if available, otherwise keep original
+  });
+}
 
 export default function BatchUpdateModal({ campaignIds, accountId, onClose, onComplete }: BatchUpdateModalProps) {
   const [commonTargeting, setCommonTargeting] = useState<CommonTargeting | null>(null);
@@ -188,17 +257,35 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
       if (data.success) {
         setCommonTargeting(data.commonTargeting);
         
-        // Initialize the current targeting with common targeting
+        // Resolve entity names for all includes and excludes
+        let resolvedIncludes = { ...defaultTargeting };
+        let resolvedExcludes = { ...defaultTargeting };
+        
         if (data.commonTargeting.commonIncludes) {
-          const includes = { ...defaultTargeting, ...data.commonTargeting.commonIncludes };
-          setIncludesTargeting(includes);
-          setOriginalIncludesTargeting(includes); // Save original state
+          // Resolve names for each facet
+          for (const [facetKey, entities] of Object.entries(data.commonTargeting.commonIncludes)) {
+            if (Array.isArray(entities) && entities.length > 0) {
+              resolvedIncludes[facetKey as keyof SelectedTargeting] = await resolveEntityNames(entities as TargetingEntity[]);
+            }
+          }
         }
+        
         if (data.commonTargeting.commonExcludes) {
-          const excludes = { ...defaultTargeting, ...data.commonTargeting.commonExcludes };
-          setExcludesTargeting(excludes);
-          setOriginalExcludesTargeting(excludes); // Save original state
+          // Resolve names for each facet
+          for (const [facetKey, entities] of Object.entries(data.commonTargeting.commonExcludes)) {
+            if (Array.isArray(entities) && entities.length > 0) {
+              resolvedExcludes[facetKey as keyof SelectedTargeting] = await resolveEntityNames(entities as TargetingEntity[]);
+            }
+          }
         }
+        
+        // Initialize the current targeting with resolved entities
+        setIncludesTargeting(resolvedIncludes);
+        setOriginalIncludesTargeting(resolvedIncludes); // Save original state
+        setExcludesTargeting(resolvedExcludes);
+        setOriginalExcludesTargeting(resolvedExcludes); // Save original state
+        
+        console.log('[BatchUpdateModal] Entity names resolved');
       }
     } catch (err) {
       console.error('Error fetching common targeting:', err);

@@ -945,143 +945,206 @@ export class LinkedInAPI {
         return entities;
       }
       
-      console.log(`[LinkedIn API] Attempting to resolve ${unresolvedUrns.length} URNs via fallback methods`);
+      console.log(`[LinkedIn API] Attempting to resolve ${unresolvedUrns.length} URNs via API`);
       
-      // Separate title URNs from other URNs for different resolution strategies
-      const titleUrns: string[] = [];
-      const otherUrns: string[] = [];
+      // Use the enhanced resolution logic
+      const apiResolved = await this.resolveEntitiesViaAPI(unresolvedUrns);
+      Object.assign(entities, apiResolved);
       
-      for (const urn of unresolvedUrns) {
-        if (urn.includes('urn:li:title:')) {
-          titleUrns.push(urn);
-        } else {
-          otherUrns.push(urn);
-        }
-      }
     } catch (error) {
-      console.error('[LinkedIn API] Error accessing local database, falling back to LinkedIn API:', error);
-      // If database access fails, treat all URNs as unresolved
-    }
-    
-    // Determine which URNs still need resolution
-    const unresolvedUrns = urns.filter(urn => !entities[urn]);
-    const titleUrns: string[] = [];
-    const otherUrns: string[] = [];
-    
-    for (const urn of unresolvedUrns) {
-      if (urn.includes('urn:li:title:')) {
-        titleUrns.push(urn);
-      } else {
-        otherUrns.push(urn);
-      }
-    }
-    
-    // Handle title URNs with fallback names
-    if (titleUrns.length > 0) {
-      console.log(`[LinkedIn API] Creating fallback names for ${titleUrns.length} title URNs`);
-      
-      // Create fallback names for titles
-      for (const urn of titleUrns) {
-        const id = urn.split(':').pop() || urn;
-        entities[urn] = {
-          urn,
-          name: `Job Title ${id}`,
-          id
-        };
-      }
-    }
-    
-    // Handle other URNs with direct API call
-    if (otherUrns.length > 0) {
-      console.log(`[LinkedIn API] Resolving ${otherUrns.length} non-title URNs using direct API`);
-      
-      // Filter out URN types that cannot be resolved via adTargetingEntities API
-      const resolvableUrns = otherUrns.filter(urn => {
-        // Skip staff count ranges (they have complex format with parentheses)
-        if (urn.includes('urn:li:staffCountRange:')) return false;
-        // Skip ad segments (they're not resolvable via adTargetingEntities)
-        if (urn.includes('urn:li:adSegment:')) return false;
-        // Skip locale URNs (they're not standard targeting entities)
-        if (urn.includes('urn:li:locale:')) return false;
-        return true;
-      });
-      
-      console.log(`[LinkedIn API] Filtered to ${resolvableUrns.length} resolvable URNs (filtered out ${otherUrns.length - resolvableUrns.length} problematic URNs)`);
-      
-      if (resolvableUrns.length > 0) {
-        try {
-          // Use the correct /rest/ API format as per LinkedIn documentation
-          // Format: GET https://api.linkedin.com/rest/adTargetingEntities?q=urns&urns=List(...)
-          const encodedUrns = resolvableUrns.map(urn => encodeURIComponent(urn));
-          const urnsParam = `List(${encodedUrns.join(',')})`;
-          
-          const url = `/adTargetingEntities?q=urns&urns=${urnsParam}&queryVersion=QUERY_USES_URNS&locale=(language:en,country:US)`;
-          const response = await this.client.get(url);
-        
-        if (response.data.elements) {
-          for (const element of response.data.elements) {
-            entities[element.urn] = {
-              urn: element.urn,
-              name: element.name || element.title || `Entity ${element.urn.split(':').pop()}`,
-              id: element.urn.split(':').pop() || element.urn
-            };
-          }
-        }
-        
-          console.log(`[LinkedIn API] Successfully resolved ${Object.keys(entities).length - titleUrns.length} non-title entity names`);
-        } catch (error) {
-          console.error('[LinkedIn API] Error resolving non-title entity names:', error);
-          
-          // Fallback for resolvable entities only
-          for (const urn of resolvableUrns) {
-            const id = urn.split(':').pop() || urn;
-            const entityType = this.getEntityTypeFromUrn(urn);
-            entities[urn] = {
-              urn,
-              name: `${entityType} ${id}`,
-              id
-            };
-          }
-        }
-      }
-      
-      // Create fallback names for filtered out URNs
-      const filteredUrns = otherUrns.filter(urn => {
-        // Include staff count ranges, ad segments, and locale URNs that we filtered out
-        if (urn.includes('urn:li:staffCountRange:')) return true;
-        if (urn.includes('urn:li:adSegment:')) return true;
-        if (urn.includes('urn:li:locale:')) return true;
-        return false;
-      });
-      
-      for (const urn of filteredUrns) {
-        const id = urn.split(':').pop() || urn;
-        let entityType = this.getEntityTypeFromUrn(urn);
-        let name = `${entityType} ${id}`;
-        
-        // Better fallback names for special URN types
-        if (urn.includes('urn:li:staffCountRange:')) {
-          const range = id.replace(/[()]/g, ''); // Remove parentheses
-          entityType = 'Company Size';
-          name = `${range} employees`;
-        } else if (urn.includes('urn:li:adSegment:')) {
-          entityType = 'Audience Segment';
-          name = `Segment ${id}`;
-        } else if (urn.includes('urn:li:locale:')) {
-          entityType = 'Locale';
-          name = id.toUpperCase();
-        }
-        
-        entities[urn] = {
-          urn,
-          name,
-          id
-        };
-      }
+      console.error('[LinkedIn API] Error accessing local database, falling back to API:', error);
+      // If database access fails, resolve via API
+      const apiResolved = await this.resolveEntitiesViaAPI(urns.filter(urn => !entities[urn]));
+      Object.assign(entities, apiResolved);
     }
     
     console.log(`[LinkedIn API] Total resolved entities: ${Object.keys(entities).length}/${urns.length}`);
     return entities;
+  }
+
+  // Public method for API endpoint to resolve entity names
+  async resolveEntityNamesAPI(urns: string[]): Promise<Record<string, TargetingEntity>> {
+    return this.resolveEntitiesViaAPI(urns);
+  }
+
+  // Enhanced entity resolution via LinkedIn API with better handling
+  private async resolveEntitiesViaAPI(urns: string[]): Promise<Record<string, TargetingEntity>> {
+    if (urns.length === 0) return {};
+    
+    const entities: Record<string, TargetingEntity> = {};
+    
+    // Group URNs by type for efficient processing
+    const urnsByType: Record<string, string[]> = {
+      titles: [],
+      organizations: [],
+      industries: [],
+      functions: [],
+      seniorities: [],
+      skills: [],
+      locations: [],
+      staffCountRanges: [],
+      revenue: [],
+      other: []
+    };
+    
+    for (const urn of urns) {
+      if (urn.includes('urn:li:title:')) {
+        urnsByType.titles.push(urn);
+      } else if (urn.includes('urn:li:organization:')) {
+        urnsByType.organizations.push(urn);
+      } else if (urn.includes('urn:li:industry:')) {
+        urnsByType.industries.push(urn);
+      } else if (urn.includes('urn:li:function:')) {
+        urnsByType.functions.push(urn);
+      } else if (urn.includes('urn:li:seniority:')) {
+        urnsByType.seniorities.push(urn);
+      } else if (urn.includes('urn:li:skill:')) {
+        urnsByType.skills.push(urn);
+      } else if (urn.includes('urn:li:geo:') || urn.includes('urn:li:region:') || urn.includes('urn:li:country:')) {
+        urnsByType.locations.push(urn);
+      } else if (urn.includes('urn:li:staffCountRange:')) {
+        urnsByType.staffCountRanges.push(urn);
+      } else if (urn.includes('urn:li:revenue:')) {
+        urnsByType.revenue.push(urn);
+      } else {
+        urnsByType.other.push(urn);
+      }
+    }
+    
+    // Resolve staff count ranges with readable names (these have special format)
+    for (const urn of urnsByType.staffCountRanges) {
+      const id = urn.split(':').pop() || urn;
+      const range = id.replace(/[()]/g, '');
+      const parts = range.split(',');
+      
+      let name = 'Company Size';
+      if (parts.length === 2) {
+        const min = parseInt(parts[0]);
+        const max = parseInt(parts[1]);
+        
+        if (min === 1 && max === 1) {
+          name = 'Self-employed';
+        } else if (max === -1) {
+          name = `${min.toLocaleString()}+ employees`;
+        } else {
+          name = `${min.toLocaleString()}-${max.toLocaleString()} employees`;
+        }
+      }
+      
+      entities[urn] = { urn, name, id };
+    }
+    
+    // Resolve revenue ranges with readable names (these have special format)
+    for (const urn of urnsByType.revenue) {
+      const id = urn.split(':').pop() || urn;
+      const range = id.replace(/[()]/g, '');
+      const parts = range.split(',');
+      
+      let name = 'Revenue Range';
+      if (parts.length === 2) {
+        const min = parseInt(parts[0]);
+        const max = parseInt(parts[1]);
+        
+        if (min === -2147483647 || min < 0) {
+          name = 'Under $1M';
+        } else if (max === 2147483647) {
+          name = `$${min}B+`;
+        } else if (max >= 1000) {
+          name = `$${min}B-$${max}B`;
+        } else if (max >= 100) {
+          name = `$${min}M-$${max}M`;
+        } else {
+          name = `$${min}M-$${max}M`;
+        }
+      }
+      
+      entities[urn] = { urn, name, id };
+    }
+    
+    // Batch resolve entity types via LinkedIn API (including titles)
+    const resolvableUrns = [
+      ...urnsByType.titles,
+      ...urnsByType.organizations,
+      ...urnsByType.industries,
+      ...urnsByType.functions,
+      ...urnsByType.seniorities,
+      ...urnsByType.skills,
+      ...urnsByType.locations,
+      ...urnsByType.other
+    ].filter(urn => 
+      // Filter out URN types that cannot be resolved via API
+      !urn.includes('urn:li:adSegment:') && 
+      !urn.includes('urn:li:locale:')
+    );
+    
+    if (resolvableUrns.length > 0) {
+      // Batch resolve in chunks of 50 to avoid overloading the API
+      const CHUNK_SIZE = 50;
+      
+      for (let i = 0; i < resolvableUrns.length; i += CHUNK_SIZE) {
+        const chunk = resolvableUrns.slice(i, i + CHUNK_SIZE);
+        
+        try {
+          const encodedUrns = chunk.map(urn => encodeURIComponent(urn));
+          const urnsParam = `List(${encodedUrns.join(',')})`;
+          
+          const url = `/adTargetingEntities?q=urns&urns=${urnsParam}&queryVersion=QUERY_USES_URNS&locale=(language:en,country:US)`;
+          const response = await this.client.get(url);
+          
+          if (response.data.elements) {
+            for (const element of response.data.elements) {
+              entities[element.urn] = {
+                urn: element.urn,
+                name: element.name || element.title || this.createFallbackName(element.urn),
+                id: element.urn.split(':').pop() || element.urn
+              };
+            }
+          }
+          
+          console.log(`[LinkedIn API] Resolved ${response.data.elements?.length || 0} entities from chunk ${i / CHUNK_SIZE + 1}`);
+        } catch (error) {
+          console.error(`[LinkedIn API] Error resolving entity chunk:`, error);
+          
+          // Create fallback names for failed chunk
+          for (const urn of chunk) {
+            if (!entities[urn]) {
+              entities[urn] = {
+                urn,
+                name: this.createFallbackName(urn),
+                id: urn.split(':').pop() || urn
+              };
+            }
+          }
+        }
+      }
+    }
+    
+    // Handle any remaining URNs with fallback names
+    for (const urn of urns) {
+      if (!entities[urn]) {
+        entities[urn] = {
+          urn,
+          name: this.createFallbackName(urn),
+          id: urn.split(':').pop() || urn
+        };
+      }
+    }
+    
+    return entities;
+  }
+  
+  // Create a better fallback name based on URN type
+  private createFallbackName(urn: string): string {
+    const id = urn.split(':').pop() || urn;
+    
+    if (urn.includes('urn:li:adSegment:')) {
+      return `Audience Segment ${id}`;
+    } else if (urn.includes('urn:li:locale:')) {
+      return id.toUpperCase();
+    } else {
+      const entityType = this.getEntityTypeFromUrn(urn);
+      return `${entityType} ${id}`;
+    }
   }
 
   // Helper method to get entity type from URN for better fallback naming
