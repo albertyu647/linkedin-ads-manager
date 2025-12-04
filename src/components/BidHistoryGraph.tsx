@@ -86,6 +86,7 @@ export default function BidHistoryGraph({ campaignId, campaignName, adjustments,
                     <YAxis
                       label={{ value: 'Bid Amount (CAD)', angle: -90, position: 'insideLeft' }}
                       tick={{ fontSize: 12 }}
+                      domain={['dataMin - 1', 'dataMax + 1']}
                     />
                     <Tooltip content={<CustomTooltip />} />
                     <Legend />
@@ -121,38 +122,46 @@ export default function BidHistoryGraph({ campaignId, campaignName, adjustments,
                           Change
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Spend at Adjustment
+                          Spend Since Previous
                         </th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {sortedAdjustments.map((adj, index) => (
-                        <tr key={adj.id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
-                            {new Date(adj.adjustmentTimestamp).toLocaleString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                              year: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                            CAD {adj.oldBid.toFixed(2)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-medium">
-                            CAD {adj.newBid.toFixed(2)}
-                          </td>
-                          <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${
-                            adj.bidAdjustmentAmount > 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {adj.bidAdjustmentAmount > 0 ? '+' : ''}CAD {adj.bidAdjustmentAmount.toFixed(2)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                            CAD {adj.spendSinceOct1AtAdjustment.toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
+                      {sortedAdjustments.map((adj, index) => {
+                        // Calculate spend delta between this adjustment and previous one
+                        const previousAdj = index > 0 ? sortedAdjustments[index - 1] : null;
+                        const spendDelta = previousAdj
+                          ? adj.spendSinceOct1AtAdjustment - previousAdj.spendSinceOct1AtAdjustment
+                          : adj.spendSinceOct1AtAdjustment; // First adjustment shows total spend since Oct 1
+
+                        return (
+                          <tr key={adj.id} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
+                              {new Date(adj.adjustmentTimestamp).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                              CAD {adj.oldBid.toFixed(2)}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-medium">
+                              CAD {adj.newBid.toFixed(2)}
+                            </td>
+                            <td className={`px-4 py-3 whitespace-nowrap text-sm font-medium ${
+                              adj.bidAdjustmentAmount > 0 ? 'text-green-600' : 'text-red-600'
+                            }`}>
+                              {adj.bidAdjustmentAmount > 0 ? '+' : ''}CAD {adj.bidAdjustmentAmount.toFixed(2)}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                              CAD {spendDelta.toFixed(2)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

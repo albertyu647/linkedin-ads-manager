@@ -865,7 +865,7 @@ export default function CampaignList({
 
                     return (
                       <div className="flex items-start space-x-2">
-                        <div className="flex flex-col group relative space-y-0.5 flex-1">
+                        <div className="flex flex-col space-y-0.5 flex-1">
                           {/* Current adjustment info */}
                           <div className="flex items-center space-x-1">
                             <span className={`text-sm font-medium ${
@@ -903,22 +903,6 @@ export default function CampaignList({
                             )}
                           </div>
                         )}
-
-                          {/* Tooltip explaining the calculation */}
-                          <div className="hidden group-hover:block absolute z-10 w-72 p-2 mt-1 left-0 top-full text-xs bg-gray-800 text-white rounded shadow-lg">
-                            <div>Current spend since last adjustment: {currencyCode} {spendSince.toFixed(2)}</div>
-                            <div className="mt-1">Last bid adjusted by {wasIncrease ? '+' : ''}{currencyCode} {Math.abs(adjustment.bidAdjustmentAmount).toFixed(2)} at {timeSince}</div>
-                            {previousAdj && spendBetweenBids !== null && (
-                              <>
-                                <div className="mt-2 pt-2 border-t border-gray-600">
-                                  <div>Previous bid adjusted by {previousAdj.bidAdjustmentAmount > 0 ? '+' : ''}{currencyCode} {Math.abs(previousAdj.bidAdjustmentAmount).toFixed(2)}</div>
-                                  <div>at {formatTimeSinceAdjustment(previousAdj.adjustmentTimestamp)}</div>
-                                </div>
-                                <div className="mt-1">Spend between adjustments: {currencyCode} {spendBetweenBids.toFixed(2)}</div>
-                              </>
-                            )}
-                            <div className="mt-2 pt-2 border-t border-gray-600 text-gray-300">All amounts tracked since Oct 1, 2025 baseline</div>
-                          </div>
                         </div>
 
                         {/* Graph button */}
