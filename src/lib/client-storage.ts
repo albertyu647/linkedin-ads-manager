@@ -93,6 +93,29 @@ export const BidHistory = {
   },
 
   /**
+   * Clean up adjustments older than specified days (default: 180 days)
+   */
+  cleanup(retentionDays: number = 180): number {
+    if (!isBrowser()) return 0;
+
+    const history = this.getAll();
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+    const filtered = history.filter(adj => {
+      const adjDate = new Date(adj.adjustmentTimestamp);
+      return adjDate >= cutoffDate;
+    });
+
+    const removedCount = history.length - filtered.length;
+    if (removedCount > 0) {
+      localStorage.setItem(BID_HISTORY_KEY, JSON.stringify(filtered));
+    }
+
+    return removedCount;
+  },
+
+  /**
    * Clear all bid history
    */
   clear(): void {

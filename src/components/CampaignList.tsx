@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { LinkedInCampaign } from '@/types/linkedin';
 import { formatTimeSinceAdjustment } from '@/lib/bid-tracking';
 import { BidHistory } from '@/lib/client-storage';
+import BidHistoryGraph from './BidHistoryGraph';
 
 interface BidAdjustmentData {
   campaignId: string;
@@ -11,6 +12,12 @@ interface BidAdjustmentData {
   spendSinceOct1AtAdjustment: number;
   adjustmentTimestamp: string;
   bidAdjustmentAmount: number;
+  // Previous adjustment data (second-to-last)
+  previousAdjustment?: {
+    spendSinceOct1AtAdjustment: number;
+    adjustmentTimestamp: string;
+    bidAdjustmentAmount: number;
+  };
 }
 
 interface CampaignListProps {
@@ -43,31 +50,45 @@ export default function CampaignList({
   const [savingBids, setSavingBids] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [campaignProgress, setCampaignProgress] = useState<Map<string, 'pending' | 'processing' | 'completed' | 'failed'>>(new Map());
+  const [showGraphForCampaign, setShowGraphForCampaign] = useState<string | null>(null);
 
   // Load bid adjustments from client-side storage
   useEffect(() => {
     if (campaigns.length === 0) return;
-    
+
     setLoadingAdjustments(true);
     const adjustmentsMap = new Map<string, BidAdjustmentData>();
-    
+
     try {
+      // Clean up old adjustments (keep last 180 days)
+      BidHistory.cleanup(180);
+
       // Get all adjustments from client storage
       campaigns.forEach((campaign) => {
         if (!campaign.id) return;
-        
-        const adjustment = BidHistory.getLatest(campaign.id);
-        if (adjustment) {
+
+        // Get the last 2 adjustments for this campaign
+        const allAdjustments = BidHistory.getByCampaign(campaign.id);
+
+        if (allAdjustments.length > 0) {
+          const latestAdjustment = allAdjustments[0];
+          const previousAdjustment = allAdjustments.length > 1 ? allAdjustments[1] : undefined;
+
           adjustmentsMap.set(campaign.id, {
-            campaignId: adjustment.campaignId,
-            spentAtAdjustment: adjustment.spentAtAdjustment,
-            spendSinceOct1AtAdjustment: adjustment.spendSinceOct1AtAdjustment || 0,
-            adjustmentTimestamp: adjustment.adjustmentTimestamp,
-            bidAdjustmentAmount: adjustment.bidAdjustmentAmount
+            campaignId: latestAdjustment.campaignId,
+            spentAtAdjustment: latestAdjustment.spentAtAdjustment,
+            spendSinceOct1AtAdjustment: latestAdjustment.spendSinceOct1AtAdjustment || 0,
+            adjustmentTimestamp: latestAdjustment.adjustmentTimestamp,
+            bidAdjustmentAmount: latestAdjustment.bidAdjustmentAmount,
+            previousAdjustment: previousAdjustment ? {
+              spendSinceOct1AtAdjustment: previousAdjustment.spendSinceOct1AtAdjustment || 0,
+              adjustmentTimestamp: previousAdjustment.adjustmentTimestamp,
+              bidAdjustmentAmount: previousAdjustment.bidAdjustmentAmount
+            } : undefined
           });
         }
       });
-      
+
       setBidAdjustments(adjustmentsMap);
     } catch (err) {
       console.error('Failed to load bid adjustments from storage:', err);
@@ -820,49 +841,99 @@ export default function CampaignList({
                 <td className="px-6 py-4 whitespace-nowrap">
                   {campaign.id && (() => {
                     const adjustment = bidAdjustments.get(campaign.id);
-                    
+
                     if (loadingAdjustments) {
                       return <span className="text-xs text-gray-400">Loading...</span>;
                     }
-                    
+
                     if (!adjustment) {
                       return <span className="text-xs text-gray-400">No adjustments</span>;
                     }
-                    
+
                     // Use Oct 1 baseline for consistent tracking regardless of date filter
                     const currentSpendSinceOct1 = (campaign as any).spendSinceOct1 || 0;
                     const spendSince = currentSpendSinceOct1 - adjustment.spendSinceOct1AtAdjustment;
                     const timeSince = formatTimeSinceAdjustment(adjustment.adjustmentTimestamp);
                     const wasIncrease = adjustment.bidAdjustmentAmount > 0;
-                    
-                    // Debug logging
-                    console.log(`[CampaignList] Campaign ${campaign.id}:`, {
-                      currentSpendSinceOct1,
-                      spendSinceOct1AtAdjustment: adjustment.spendSinceOct1AtAdjustment,
-                      spendSince,
-                      calculation: `${currentSpendSinceOct1} - ${adjustment.spendSinceOct1AtAdjustment} = ${spendSince}`
-                    });
-                    
+                    const currencyCode = campaign.spent?.currencyCode || 'CAD';
+
+                    // Calculate spend between previous and current bid if previous exists
+                    const previousAdj = adjustment.previousAdjustment;
+                    const spendBetweenBids = previousAdj
+                      ? adjustment.spendSinceOct1AtAdjustment - previousAdj.spendSinceOct1AtAdjustment
+                      : null;
+
                     return (
-                      <div className="flex flex-col group relative">
-                        <div className="flex items-center space-x-1">
-                          <span className={`text-sm font-medium ${
-                            spendSince > 0 ? 'text-blue-600' : 'text-gray-900'
-                          }`}>
-                            {campaign.spent?.currencyCode || 'CAD'} {spendSince.toFixed(2)}
-                          </span>
-                        </div>
+                      <div className="flex items-start space-x-2">
+                        <div className="flex flex-col group relative space-y-0.5 flex-1">
+                          {/* Current adjustment info */}
+                          <div className="flex items-center space-x-1">
+                            <span className={`text-sm font-medium ${
+                              spendSince > 0 ? 'text-blue-600' : 'text-gray-900'
+                            }`}>
+                              {currencyCode} {spendSince.toFixed(2)}
+                            </span>
+                          </div>
                         <div className="flex items-center space-x-1">
                           <span className="text-xs text-gray-500">{timeSince}</span>
                           <span className={`text-xs font-medium ${wasIncrease ? 'text-green-600' : 'text-red-600'}`}>
-                            ({wasIncrease ? '+' : ''}{campaign.spent?.currencyCode || 'CAD'} {Math.abs(adjustment.bidAdjustmentAmount).toFixed(2)})
+                            ({wasIncrease ? '+' : ''}{currencyCode} {Math.abs(adjustment.bidAdjustmentAmount).toFixed(2)})
                           </span>
                         </div>
-                        
-                        {/* Tooltip explaining the calculation */}
-                        <div className="hidden group-hover:block absolute z-10 w-64 p-2 mt-1 left-0 top-full text-xs bg-gray-800 text-white rounded shadow-lg">
-                          Spend since Oct 1, 2025 baseline. Bid was adjusted by {wasIncrease ? '+' : ''}{campaign.spent?.currencyCode || 'CAD'} {Math.abs(adjustment.bidAdjustmentAmount).toFixed(2)}.
+
+                        {/* Previous adjustment info */}
+                        {previousAdj && (
+                          <div className="pt-1 border-t border-gray-200">
+                            <div className="flex items-center space-x-1">
+                              <span className="text-xs text-gray-400">Prev:</span>
+                              <span className="text-xs text-gray-500">
+                                {formatTimeSinceAdjustment(previousAdj.adjustmentTimestamp)}
+                              </span>
+                              <span className={`text-xs ${previousAdj.bidAdjustmentAmount > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                ({previousAdj.bidAdjustmentAmount > 0 ? '+' : ''}{currencyCode} {Math.abs(previousAdj.bidAdjustmentAmount).toFixed(2)})
+                              </span>
+                            </div>
+                            {spendBetweenBids !== null && (
+                              <div className="flex items-center space-x-1">
+                                <span className="text-xs text-gray-400">Spend between:</span>
+                                <span className="text-xs text-purple-600 font-medium">
+                                  {currencyCode} {spendBetweenBids.toFixed(2)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                          {/* Tooltip explaining the calculation */}
+                          <div className="hidden group-hover:block absolute z-10 w-72 p-2 mt-1 left-0 top-full text-xs bg-gray-800 text-white rounded shadow-lg">
+                            <div>Current spend since last adjustment: {currencyCode} {spendSince.toFixed(2)}</div>
+                            <div className="mt-1">Last bid adjusted by {wasIncrease ? '+' : ''}{currencyCode} {Math.abs(adjustment.bidAdjustmentAmount).toFixed(2)} at {timeSince}</div>
+                            {previousAdj && spendBetweenBids !== null && (
+                              <>
+                                <div className="mt-2 pt-2 border-t border-gray-600">
+                                  <div>Previous bid adjusted by {previousAdj.bidAdjustmentAmount > 0 ? '+' : ''}{currencyCode} {Math.abs(previousAdj.bidAdjustmentAmount).toFixed(2)}</div>
+                                  <div>at {formatTimeSinceAdjustment(previousAdj.adjustmentTimestamp)}</div>
+                                </div>
+                                <div className="mt-1">Spend between adjustments: {currencyCode} {spendBetweenBids.toFixed(2)}</div>
+                              </>
+                            )}
+                            <div className="mt-2 pt-2 border-t border-gray-600 text-gray-300">All amounts tracked since Oct 1, 2025 baseline</div>
+                          </div>
                         </div>
+
+                        {/* Graph button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowGraphForCampaign(campaign.id || null);
+                          }}
+                          className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 p-1 rounded transition-colors"
+                          title="View bid history graph"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                          </svg>
+                        </button>
                       </div>
                     );
                   })()}
@@ -965,6 +1036,23 @@ export default function CampaignList({
           </div>
         </div>
       )}
+
+      {/* Bid History Graph Modal */}
+      {showGraphForCampaign && (() => {
+        const campaign = campaigns.find(c => c.id === showGraphForCampaign);
+        const adjustments = BidHistory.getByCampaign(showGraphForCampaign);
+
+        if (!campaign || adjustments.length === 0) return null;
+
+        return (
+          <BidHistoryGraph
+            campaignId={showGraphForCampaign}
+            campaignName={campaign.name || 'Unknown Campaign'}
+            adjustments={adjustments}
+            onClose={() => setShowGraphForCampaign(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
