@@ -51,6 +51,7 @@ export default function CampaignList({
   const [showProgress, setShowProgress] = useState(false);
   const [campaignProgress, setCampaignProgress] = useState<Map<string, 'pending' | 'processing' | 'completed' | 'failed'>>(new Map());
   const [showGraphForCampaign, setShowGraphForCampaign] = useState<string | null>(null);
+  const [detectionNotification, setDetectionNotification] = useState<{ count: number; show: boolean } | null>(null);
 
   // Load bid adjustments from client-side storage
   useEffect(() => {
@@ -90,12 +91,59 @@ export default function CampaignList({
       });
 
       setBidAdjustments(adjustmentsMap);
+
+      // Detect and auto-record bid changes made outside the app
+      let detectedChanges = 0;
+      campaigns.forEach((campaign) => {
+        if (!campaign.id || !campaign.unitCost?.amount) return;
+
+        const currentBid = parseFloat(campaign.unitCost.amount);
+        const latestAdjustment = adjustmentsMap.get(campaign.id);
+
+        // Check if current bid differs from last recorded bid
+        if (latestAdjustment) {
+          const lastRecordedBid = latestAdjustment.spentAtAdjustment; // This should be newBid from last adjustment
+          // Get the actual last recorded bid from history
+          const allAdjustments = BidHistory.getByCampaign(campaign.id);
+          if (allAdjustments.length > 0) {
+            const lastRecordedBid = allAdjustments[0].newBid;
+
+            // If bid changed, auto-record it
+            if (Math.abs(currentBid - lastRecordedBid) > 0.01) { // 0.01 threshold for floating point comparison
+              const bidAdjustment = currentBid - lastRecordedBid;
+              const currentSpent = parseFloat(campaign.spent?.amount || '0');
+              const spendSinceOct1 = (campaign as any).spendSinceOct1 || 0;
+
+              BidHistory.record({
+                campaignId: campaign.id,
+                bidAdjustmentAmount: bidAdjustment,
+                oldBid: lastRecordedBid,
+                newBid: currentBid,
+                spentAtAdjustment: currentSpent,
+                spendSinceOct1AtAdjustment: spendSinceOct1,
+                accountId: accountId
+              });
+
+              detectedChanges++;
+            }
+          }
+        }
+      });
+
+      // Show notification if changes were detected
+      if (detectedChanges > 0) {
+        setDetectionNotification({ count: detectedChanges, show: true });
+        // Auto-dismiss after 3 seconds
+        setTimeout(() => {
+          setDetectionNotification(null);
+        }, 3000);
+      }
     } catch (err) {
       console.error('Failed to load bid adjustments from storage:', err);
     } finally {
       setLoadingAdjustments(false);
     }
-  }, [campaigns]);
+  }, [campaigns, accountId]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -477,6 +525,23 @@ export default function CampaignList({
 
   return (
     <div className="bg-white shadow rounded-lg overflow-visible">
+      {/* Auto-detection notification banner */}
+      {detectionNotification?.show && (
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-3 mb-4 mx-4 mt-4 rounded">
+          <div className="flex items-center">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <div className="ml-3 flex-1">
+              <p className="text-sm text-blue-700">
+                Detected and recorded {detectionNotification.count} bid change{detectionNotification.count > 1 ? 's' : ''} made outside this app
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="px-4 py-5 sm:px-6 border-b border-gray-200 bg-white">
         <div className="flex items-center justify-between">
           <h3 className="text-lg leading-6 font-medium text-gray-900">
