@@ -1846,4 +1846,121 @@ export class LinkedInAPI {
     console.log(`[LinkedIn API] Bid update completed. Successful: ${successful.length}, Failed: ${failed.length}`);
     return { successful, failed };
   }
+
+  /**
+   * Bulk update campaign daily budgets - increment all campaign budgets by a specified amount
+   * @param campaignIds - Array of campaign IDs to update
+   * @param budgetAdjustment - Amount to increment budgets by (can be negative to decrease)
+   * @param accountId - LinkedIn ad account ID
+   */
+  async batchUpdateCampaignBudgets(
+    campaignIds: string[],
+    budgetAdjustment: number,
+    accountId: string
+  ): Promise<{
+    successful: string[];
+    failed: Array<{ campaignId: string; error: string }>
+  }> {
+    const successful: string[] = [];
+    const failed: Array<{ campaignId: string; error: string }> = [];
+
+    console.log(`[LinkedIn API] Updating budgets for ${campaignIds.length} campaigns with adjustment: ${budgetAdjustment}`);
+
+    // Get all campaigns from the account first to verify which ones exist
+    let allCampaigns: any[] = [];
+    try {
+      allCampaigns = await this.getCampaigns(accountId, { getAllPages: false });
+      console.log(`[LinkedIn API] Retrieved ${allCampaigns.length} campaigns from account ${accountId}`);
+    } catch (error: any) {
+      console.error(`[LinkedIn API] Failed to get campaigns from account ${accountId}:`, error.message);
+      return { successful: [], failed: campaignIds.map(id => ({ campaignId: id, error: 'Failed to retrieve campaigns from account' })) };
+    }
+
+    // Verify which campaigns exist and get their current data
+    const validCampaignData: Array<{ id: string; campaign: any }> = [];
+    for (const campaignId of campaignIds) {
+      const cleanId = String(campaignId).includes('urn:li:sponsoredCampaign:')
+        ? String(campaignId).split(':').pop()
+        : String(campaignId);
+
+      if (!cleanId) {
+        failed.push({ campaignId, error: 'Invalid campaign ID format' });
+        continue;
+      }
+
+      // Find the campaign in the retrieved campaigns
+      const campaign = allCampaigns.find(c =>
+        c.id === cleanId ||
+        c.id === parseInt(cleanId) ||
+        c.id === `urn:li:sponsoredCampaign:${cleanId}`
+      );
+
+      if (campaign) {
+        validCampaignData.push({ id: cleanId, campaign });
+        console.log(`[LinkedIn API] Found campaign ${cleanId} with current daily budget:`, campaign.dailyBudget);
+      } else {
+        failed.push({ campaignId: cleanId, error: `Campaign ${cleanId} not found in account ${accountId}` });
+        console.log(`[LinkedIn API] Campaign ${cleanId} not found in account ${accountId}`);
+      }
+    }
+
+    // Now update the valid campaigns
+    for (const { id: cleanId, campaign: currentCampaign } of validCampaignData) {
+      try {
+        // Check if campaign has a daily budget that can be updated
+        if (!currentCampaign.dailyBudget) {
+          failed.push({ campaignId: cleanId, error: 'Campaign has no existing daily budget (dailyBudget)' });
+          continue;
+        }
+
+        const currentBudget = parseFloat(currentCampaign.dailyBudget.amount);
+        const newBudget = Math.max(10.00, currentBudget + budgetAdjustment); // LinkedIn minimum daily budget: $10
+
+        const updateData = {
+          patch: {
+            $set: {
+              dailyBudget: {
+                amount: newBudget.toFixed(2),
+                currencyCode: currentCampaign.dailyBudget.currencyCode
+              }
+            }
+          }
+        };
+
+        console.log(`[LinkedIn API] Updating campaign ${cleanId} daily budget from ${currentBudget} to ${newBudget}`);
+        console.log(`[LinkedIn API] Using URL: POST /adAccounts/${accountId}/adCampaigns/${cleanId}`);
+
+        const response = await this.client.post(
+          `/adAccounts/${accountId}/adCampaigns/${cleanId}`,
+          updateData,
+          {
+            headers: {
+              'X-RestLi-Method': 'PARTIAL_UPDATE',
+              'LinkedIn-Version': '202506',
+              'X-Restli-Protocol-Version': '2.0.0'
+            }
+          }
+        );
+
+        if (response.status === 204 || response.status === 200) {
+          successful.push(cleanId);
+          console.log(`[LinkedIn API] Successfully updated daily budget for campaign ${cleanId}: ${currentBudget} -> ${newBudget}`);
+        } else {
+          failed.push({ campaignId: cleanId, error: `Update failed with status ${response.status}` });
+        }
+      } catch (error: any) {
+        console.error(`[LinkedIn API] Error updating budget for campaign ${cleanId}:`, error);
+        console.error(`[LinkedIn API] Error details:`, error.response?.data || error.message);
+        console.error(`[LinkedIn API] Error status:`, error.response?.status);
+        console.error(`[LinkedIn API] Error headers:`, error.response?.headers);
+        failed.push({
+          campaignId: cleanId,
+          error: error.response?.data?.message || error.message || 'Unknown error'
+        });
+      }
+    }
+
+    console.log(`[LinkedIn API] Budget update completed. Successful: ${successful.length}, Failed: ${failed.length}`);
+    return { successful, failed };
+  }
 }

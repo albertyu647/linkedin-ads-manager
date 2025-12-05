@@ -53,6 +53,13 @@ export default function CampaignList({
   const [showGraphForCampaign, setShowGraphForCampaign] = useState<string | null>(null);
   const [detectionNotification, setDetectionNotification] = useState<{ count: number; show: boolean } | null>(null);
 
+  // Budget editing state variables
+  const [budgetEditMode, setBudgetEditMode] = useState(false);
+  const [budgetChanges, setBudgetChanges] = useState<Map<string, number>>(new Map());
+  const [savingBudgets, setSavingBudgets] = useState(false);
+  const [budgetShowProgress, setBudgetShowProgress] = useState(false);
+  const [budgetCampaignProgress, setBudgetCampaignProgress] = useState<Map<string, 'pending' | 'processing' | 'completed' | 'failed'>>(new Map());
+
   // Load bid adjustments from client-side storage
   useEffect(() => {
     if (campaigns.length === 0) return;
@@ -235,6 +242,41 @@ export default function CampaignList({
     setEditMode(!editMode);
   };
 
+  // Budget editing handler functions
+  const handleBudgetChange = (campaignId: string, newBudget: number) => {
+    const newChanges = new Map(budgetChanges);
+    newChanges.set(campaignId, newBudget);
+    setBudgetChanges(newChanges);
+  };
+
+  const handleBudgetKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, campaignId: string, currentBudget: number) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const newBudget = Math.round((currentBudget + 50) * 100) / 100; // Increment by $50
+      handleBudgetChange(campaignId, newBudget);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const newBudget = Math.max(10.00, Math.round((currentBudget - 50) * 100) / 100); // Min $10 daily budget
+      handleBudgetChange(campaignId, newBudget);
+    }
+  };
+
+  const toggleBudgetEditMode = () => {
+    if (budgetEditMode) {
+      // Cancel edit mode - clear changes
+      setBudgetChanges(new Map());
+    }
+    setBudgetEditMode(!budgetEditMode);
+  };
+
+  const updateBudgetCampaignProgress = (campaignId: string, status: 'pending' | 'processing' | 'completed' | 'failed') => {
+    setBudgetCampaignProgress(prev => {
+      const newMap = new Map(prev);
+      newMap.set(campaignId, status);
+      return newMap;
+    });
+  };
+
   const updateCampaignProgress = (campaignId: string, status: 'pending' | 'processing' | 'completed' | 'failed') => {
     setCampaignProgress(prev => {
       const newMap = new Map(prev);
@@ -357,6 +399,100 @@ export default function CampaignList({
       }
       
       // Reload page to show updated bids
+      window.location.reload();
+    }, 1000);
+  };
+
+  const confirmBudgetChanges = async () => {
+    if (budgetChanges.size === 0) {
+      setBudgetEditMode(false);
+      return;
+    }
+
+    setSavingBudgets(true);
+    setBudgetShowProgress(true);
+
+    // Initialize progress tracking
+    const progressMap = new Map<string, 'pending' | 'processing' | 'completed' | 'failed'>();
+    budgetChanges.forEach((_, campaignId) => {
+      progressMap.set(campaignId, 'pending');
+    });
+    setBudgetCampaignProgress(progressMap);
+
+    const results = { successful: [] as string[], failed: [] as Array<{campaignId: string, error: string}> };
+
+    // Create promises for all campaigns (PARALLEL PROCESSING)
+    const campaignPromises = Array.from(budgetChanges.entries()).map(async ([campaignId, newBudget]) => {
+      const campaign = campaigns.find(c => c.id === campaignId);
+      if (!campaign || !campaign.dailyBudget) {
+        return { campaignId, status: 'skipped' };
+      }
+
+      const oldBudget = parseFloat(campaign.dailyBudget.amount);
+      const budgetAdjustment = newBudget - oldBudget;
+
+      if (budgetAdjustment === 0) {
+        return { campaignId, status: 'skipped' };
+      }
+
+      try {
+        updateBudgetCampaignProgress(campaignId, 'processing');
+
+        const response = await fetch('/api/campaigns/batch-budget-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            campaignIds: [campaignId],
+            budgetAdjustment,
+            accountId
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          if (result.successful?.length > 0) {
+            updateBudgetCampaignProgress(campaignId, 'completed');
+            return { campaignId, status: 'success' };
+          }
+        } else {
+          const errorData = await response.json();
+          updateBudgetCampaignProgress(campaignId, 'failed');
+          return { campaignId, status: 'failed', error: errorData.error || 'Failed to update' };
+        }
+      } catch (error: any) {
+        updateBudgetCampaignProgress(campaignId, 'failed');
+        return { campaignId, status: 'failed', error: error.message };
+      }
+    });
+
+    // Wait for ALL campaigns to complete in PARALLEL
+    const campaignResults = await Promise.allSettled(campaignPromises);
+
+    // Process results
+    campaignResults.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        if (result.value.status === 'success') {
+          results.successful.push(result.value.campaignId);
+        } else if (result.value.status === 'failed') {
+          results.failed.push({
+            campaignId: result.value.campaignId,
+            error: result.value.error || 'Unknown error'
+          });
+        }
+      }
+    });
+
+    setSavingBudgets(false);
+
+    // Wait a moment to show completion, then reload
+    setTimeout(() => {
+      if (results.failed.length > 0) {
+        alert(`Updated ${results.successful.length} budgets successfully. ${results.failed.length} failed.`);
+      } else {
+        alert(`Successfully updated ${results.successful.length} budget${results.successful.length === 1 ? '' : 's'}!`);
+      }
+
+      // Reload page to show updated budgets
       window.location.reload();
     }, 1000);
   };
@@ -622,6 +758,50 @@ export default function CampaignList({
                 </button>
               </div>
             )}
+
+            {!budgetEditMode && !editMode ? (
+              <button
+                onClick={toggleBudgetEditMode}
+                className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+              >
+                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                </svg>
+                Edit Budgets
+              </button>
+            ) : budgetEditMode ? (
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={toggleBudgetEditMode}
+                  disabled={savingBudgets}
+                  className="inline-flex items-center px-3 py-1 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmBudgetChanges}
+                  disabled={savingBudgets || budgetChanges.size === 0}
+                  className="inline-flex items-center px-3 py-1 border border-transparent shadow-sm text-sm leading-4 font-medium rounded-md text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                >
+                  {savingBudgets ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Confirm Changes ({budgetChanges.size})
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -846,7 +1026,38 @@ export default function CampaignList({
                   </span>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {formatBudget(campaign.dailyBudget)}
+                  {budgetEditMode && campaign.id && campaign.dailyBudget ? (
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="number"
+                        step="50"
+                        value={budgetChanges.has(campaign.id) ? budgetChanges.get(campaign.id) : parseFloat(campaign.dailyBudget.amount)}
+                        onChange={(e) => {
+                          const value = parseFloat(e.target.value);
+                          if (!isNaN(value) && value >= 10) {
+                            handleBudgetChange(campaign.id!, value);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          const currentBudget = budgetChanges.has(campaign.id!) ? budgetChanges.get(campaign.id!)! : parseFloat(campaign.dailyBudget!.amount);
+                          handleBudgetKeyDown(e, campaign.id!, currentBudget);
+                        }}
+                        className={`w-28 px-2 py-1 text-sm border rounded focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                          budgetChanges.has(campaign.id) && budgetChanges.get(campaign.id) !== parseFloat(campaign.dailyBudget.amount)
+                            ? 'border-green-500 bg-green-50'
+                            : 'border-gray-300'
+                        }`}
+                      />
+                      {budgetChanges.has(campaign.id) && budgetChanges.get(campaign.id) !== parseFloat(campaign.dailyBudget.amount) && (
+                        <span className="text-xs text-green-600 font-medium">
+                          {budgetChanges.get(campaign.id)! > parseFloat(campaign.dailyBudget.amount) ? '↑' : '↓'}
+                          {Math.abs(budgetChanges.get(campaign.id)! - parseFloat(campaign.dailyBudget.amount)).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    formatBudget(campaign.dailyBudget)
+                  )}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {editMode && campaign.id && campaign.unitCost ? (
@@ -1076,6 +1287,91 @@ export default function CampaignList({
                       setEditMode(false);
                     }}
                     className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Budget Progress Modal */}
+      {budgetShowProgress && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+          <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="p-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">
+                Updating Campaign Budgets
+              </h3>
+              <div className="space-y-2">
+                {Array.from(budgetChanges.entries()).map(([campaignId, newBudget]) => {
+                  const campaign = campaigns.find(c => c.id === campaignId);
+                  const status = budgetCampaignProgress.get(campaignId) || 'pending';
+                  const oldBudget = campaign?.dailyBudget ? parseFloat(campaign.dailyBudget.amount) : 0;
+                  const adjustment = newBudget - oldBudget;
+
+                  return (
+                    <div key={campaignId} className="flex items-center space-x-3 p-3 bg-gray-50 rounded">
+                      {/* Status Icon */}
+                      <div className="flex-shrink-0">
+                        {status === 'pending' && (
+                          <div className="w-5 h-5 border-2 border-gray-300 rounded-full"></div>
+                        )}
+                        {status === 'processing' && (
+                          <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin"></div>
+                        )}
+                        {status === 'completed' && (
+                          <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        {status === 'failed' && (
+                          <div className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center">
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Campaign Info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {campaign?.name || `Campaign ${campaignId}`}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {oldBudget.toFixed(2)} → {newBudget.toFixed(2)}
+                          <span className={adjustment > 0 ? 'text-green-600' : 'text-red-600'}>
+                            {' '}({adjustment > 0 ? '+' : ''}{adjustment.toFixed(2)})
+                          </span>
+                        </p>
+                      </div>
+
+                      {/* Status Text */}
+                      <div className="text-xs text-gray-500 flex-shrink-0">
+                        {status === 'pending' && 'Waiting...'}
+                        {status === 'processing' && 'Updating...'}
+                        {status === 'completed' && 'Done'}
+                        {status === 'failed' && 'Failed'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {!savingBudgets && (
+                <div className="mt-6 flex justify-end">
+                  <button
+                    onClick={() => {
+                      setBudgetShowProgress(false);
+                      setBudgetChanges(new Map());
+                      setBudgetEditMode(false);
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
                   >
                     Close
                   </button>
