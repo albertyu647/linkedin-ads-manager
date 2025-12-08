@@ -389,18 +389,13 @@ export default function CampaignList({
     });
 
     setSavingBids(false);
-    
-    // Wait a moment to show completion, then reload
-    setTimeout(() => {
-      if (results.failed.length > 0) {
-        alert(`Updated ${results.successful.length} bids successfully. ${results.failed.length} failed.`);
-      } else {
-        alert(`Successfully updated ${results.successful.length} bid${results.successful.length === 1 ? '' : 's'}!`);
-      }
-      
-      // Reload page to show updated bids
-      window.location.reload();
-    }, 1000);
+
+    // Show completion message
+    if (results.failed.length > 0) {
+      alert(`Updated ${results.successful.length} bids successfully. ${results.failed.length} failed.`);
+    } else {
+      alert(`Successfully updated ${results.successful.length} bid${results.successful.length === 1 ? '' : 's'}!`);
+    }
   };
 
   const confirmBudgetChanges = async () => {
@@ -484,17 +479,12 @@ export default function CampaignList({
 
     setSavingBudgets(false);
 
-    // Wait a moment to show completion, then reload
-    setTimeout(() => {
-      if (results.failed.length > 0) {
-        alert(`Updated ${results.successful.length} budgets successfully. ${results.failed.length} failed.`);
-      } else {
-        alert(`Successfully updated ${results.successful.length} budget${results.successful.length === 1 ? '' : 's'}!`);
-      }
-
-      // Reload page to show updated budgets
-      window.location.reload();
-    }, 1000);
+    // Show completion message
+    if (results.failed.length > 0) {
+      alert(`Updated ${results.successful.length} budgets successfully. ${results.failed.length} failed.`);
+    } else {
+      alert(`Successfully updated ${results.successful.length} budget${results.successful.length === 1 ? '' : 's'}!`);
+    }
   };
 
   const sortedCampaigns = useMemo(() => {
