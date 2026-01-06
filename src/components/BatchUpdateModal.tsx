@@ -159,6 +159,16 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
   const [rawSearchResults, setRawSearchResults] = useState<Record<string, TargetingEntity[]>>({});
   const [loading, setLoading] = useState(false);
 
+  // Bulk import state
+  const [showBulkImport, setShowBulkImport] = useState<string | null>(null); // facetKey or null
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkImportResults, setBulkImportResults] = useState<{
+    added: string[];
+    notFound: string[];
+    errors: string[];
+  } | null>(null);
+
   // Computed search results - shows ALL entities with smart action buttons
   const searchResults = useMemo(() => {
     const filtered: Record<string, TargetingEntity[]> = {};
@@ -413,11 +423,126 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
 
   const cancelRemoval = (facetKey: string, entityUrn: string) => {
     const setPendingRemovals = activeTab === 'includes' ? setPendingIncludesRemovals : setPendingExcludesRemovals;
-    
+
     setPendingRemovals(prev => ({
       ...prev,
       [facetKey]: prev[facetKey as keyof SelectedTargeting].filter((e: TargetingEntity) => e.urn !== entityUrn)
     }));
+  };
+
+  const handleBulkImport = async (facetKey: string) => {
+    if (!bulkImportText.trim()) {
+      return;
+    }
+
+    setBulkImportLoading(true);
+    setBulkImportResults(null);
+
+    const results = {
+      added: [] as string[],
+      notFound: [] as string[],
+      errors: [] as string[]
+    };
+
+    // Parse comma-separated values (also handle newlines and semicolons)
+    const items = bulkImportText
+      .split(/[,;\n]/)
+      .map(item => item.trim())
+      .filter(item => item.length > 0);
+
+    console.log(`[Bulk Import] Processing ${items.length} items for ${facetKey}`);
+
+    const currentTargeting = activeTab === 'includes' ? includesTargeting : excludesTargeting;
+    const setTargeting = activeTab === 'includes' ? setIncludesTargeting : setExcludesTargeting;
+    const currentCount = currentTargeting[facetKey as keyof SelectedTargeting].length;
+    const availableSlots = 100 - currentCount;
+
+    if (items.length > availableSlots) {
+      results.errors.push(`Cannot add ${items.length} items - only ${availableSlots} slots available (currently ${currentCount}/100)`);
+      setBulkImportResults(results);
+      setBulkImportLoading(false);
+      return;
+    }
+
+    const facetUrn = TARGETING_FACETS[facetKey as keyof typeof TARGETING_FACETS].urn;
+    const entitiesToAdd: TargetingEntity[] = [];
+
+    // Search for each item
+    for (const item of items) {
+      try {
+        const response = await fetch(
+          `/api/targeting/entities?facetUrn=${encodeURIComponent(facetUrn)}&query=${encodeURIComponent(item)}`
+        );
+
+        if (!response.ok) {
+          results.errors.push(`Failed to search for "${item}"`);
+          continue;
+        }
+
+        const data = await response.json();
+        const searchResults = data.entities || [];
+
+        // Try to find an exact or close match
+        let bestMatch: TargetingEntity | null = null;
+
+        // First try exact match (case insensitive)
+        bestMatch = searchResults.find((e: TargetingEntity) =>
+          e.name.toLowerCase() === item.toLowerCase()
+        );
+
+        // If no exact match, try partial match that starts with the search term
+        if (!bestMatch) {
+          bestMatch = searchResults.find((e: TargetingEntity) =>
+            e.name.toLowerCase().startsWith(item.toLowerCase())
+          );
+        }
+
+        // If still no match, take the first result if available
+        if (!bestMatch && searchResults.length > 0) {
+          bestMatch = searchResults[0];
+        }
+
+        if (bestMatch) {
+          // Check if already in current targeting
+          const existing = currentTargeting[facetKey as keyof SelectedTargeting].find(
+            (e: TargetingEntity) => e.urn === bestMatch!.urn
+          );
+
+          if (!existing && !entitiesToAdd.find(e => e.urn === bestMatch!.urn)) {
+            entitiesToAdd.push(bestMatch);
+            results.added.push(`${item} → ${bestMatch.name}`);
+          } else if (existing) {
+            results.errors.push(`"${item}" already added`);
+          }
+        } else {
+          results.notFound.push(item);
+        }
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        console.error(`Error searching for "${item}":`, error);
+        results.errors.push(`Error searching for "${item}"`);
+      }
+    }
+
+    // Add all found entities at once
+    if (entitiesToAdd.length > 0) {
+      setTargeting(prev => ({
+        ...prev,
+        [facetKey]: [...prev[facetKey as keyof SelectedTargeting], ...entitiesToAdd]
+      }));
+    }
+
+    setBulkImportResults(results);
+    setBulkImportLoading(false);
+    console.log('[Bulk Import] Results:', results);
+  };
+
+  const closeBulkImport = () => {
+    setShowBulkImport(null);
+    setBulkImportText('');
+    setBulkImportResults(null);
   };
 
   // Get campaign status for a specific entity
@@ -892,15 +1017,139 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                       );
                     })()}
                     
-                    {/* Search input */}
-                    <div className="relative">
-                      <input
-                        type="text"
-                        placeholder={`Add ${facet.label.toLowerCase()}...`}
-                        value={searchQuery}
-                        onChange={(e) => handleSearchChange(facetKey, e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      />
+                    {/* Search input with Bulk Add button */}
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder={`Add ${facet.label.toLowerCase()}...`}
+                          value={searchQuery}
+                          onChange={(e) => handleSearchChange(facetKey, e.target.value)}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowBulkImport(facetKey)}
+                          className="px-3 py-2 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 whitespace-nowrap"
+                          title="Paste multiple comma-separated items at once"
+                        >
+                          Bulk Add
+                        </button>
+                      </div>
+
+                      {/* Bulk Import Modal for this facet */}
+                      {showBulkImport === facetKey && (
+                        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-[60] flex items-center justify-center">
+                          <div className="relative bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full mx-4">
+                            <div className="flex items-center justify-between mb-4">
+                              <h4 className="text-lg font-medium text-gray-900">
+                                Bulk Add {facet.label}
+                              </h4>
+                              <button
+                                onClick={closeBulkImport}
+                                className="text-gray-400 hover:text-gray-600"
+                              >
+                                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+
+                            <div className="mb-4">
+                              <p className="text-sm text-gray-600 mb-3">
+                                Paste multiple {facet.label.toLowerCase()} separated by commas, semicolons, or new lines.
+                                We'll search LinkedIn and add the best matches.
+                              </p>
+                              <textarea
+                                value={bulkImportText}
+                                onChange={(e) => setBulkImportText(e.target.value)}
+                                placeholder={`Example:\nSoftware Engineer, Product Manager, Data Scientist\nor one per line:\nSoftware Engineer\nProduct Manager\nData Scientist`}
+                                rows={8}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono"
+                                disabled={bulkImportLoading}
+                              />
+                            </div>
+
+                            {/* Results */}
+                            {bulkImportResults && (
+                              <div className="mb-4 space-y-2">
+                                {bulkImportResults.added.length > 0 && (
+                                  <div className="p-3 bg-green-50 border border-green-200 rounded-md">
+                                    <p className="text-sm font-medium text-green-800 mb-1">
+                                      Added {bulkImportResults.added.length} item{bulkImportResults.added.length !== 1 ? 's' : ''}:
+                                    </p>
+                                    <ul className="text-xs text-green-700 space-y-1 max-h-32 overflow-y-auto">
+                                      {bulkImportResults.added.map((item, i) => (
+                                        <li key={i}>✓ {item}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {bulkImportResults.notFound.length > 0 && (
+                                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                                    <p className="text-sm font-medium text-yellow-800 mb-1">
+                                      Not found ({bulkImportResults.notFound.length}):
+                                    </p>
+                                    <ul className="text-xs text-yellow-700 space-y-1 max-h-32 overflow-y-auto">
+                                      {bulkImportResults.notFound.map((item, i) => (
+                                        <li key={i}>⚠ {item}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {bulkImportResults.errors.length > 0 && (
+                                  <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+                                    <p className="text-sm font-medium text-red-800 mb-1">
+                                      Errors ({bulkImportResults.errors.length}):
+                                    </p>
+                                    <ul className="text-xs text-red-700 space-y-1 max-h-32 overflow-y-auto">
+                                      {bulkImportResults.errors.map((item, i) => (
+                                        <li key={i}>✗ {item}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="flex justify-end space-x-3">
+                              <button
+                                type="button"
+                                onClick={closeBulkImport}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                disabled={bulkImportLoading}
+                              >
+                                Close
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleBulkImport(facetKey)}
+                                disabled={bulkImportLoading || !bulkImportText.trim()}
+                                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 flex items-center"
+                              >
+                                {bulkImportLoading ? (
+                                  <>
+                                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Processing...
+                                  </>
+                                ) : (
+                                  'Add Items'
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Regular search results dropdown - only show if not in bulk import mode */}
+                    {!showBulkImport && (
+                      <div className="relative">
                       
                       {/* Search results dropdown */}
                       {results.length > 0 && (
@@ -993,7 +1242,8 @@ export default function BatchUpdateModal({ campaignIds, accountId, onClose, onCo
                           })}
                         </div>
                       )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
