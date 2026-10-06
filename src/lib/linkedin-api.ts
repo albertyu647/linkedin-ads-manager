@@ -9,6 +9,10 @@ import {
   CampaignTargeting 
 } from '@/types/linkedin';
 
+// LinkedIn sunsets each monthly API version ~1 year after release; bump this when it nears sunset.
+// See https://learn.microsoft.com/en-us/linkedin/marketing/versioning
+export const LINKEDIN_API_VERSION = '202609';
+
 
 export class LinkedInAPI {
   private client: AxiosInstance;
@@ -20,7 +24,7 @@ export class LinkedInAPI {
       baseURL: 'https://api.linkedin.com/rest',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
-        'LinkedIn-Version': '202506', // Latest API version as per briefing
+        'LinkedIn-Version': LINKEDIN_API_VERSION,
         'X-Restli-Protocol-Version': '2.0.0',
         'Content-Type': 'application/json',
         'User-Agent': 'LinkedIn-Ads-Manager/1.0' // Add custom User-Agent to avoid potential blocks
@@ -1819,7 +1823,7 @@ export class LinkedInAPI {
           {
             headers: {
               'X-RestLi-Method': 'PARTIAL_UPDATE',
-              'LinkedIn-Version': '202506',
+              'LinkedIn-Version': LINKEDIN_API_VERSION,
               'X-Restli-Protocol-Version': '2.0.0'
             }
           }
@@ -1936,7 +1940,7 @@ export class LinkedInAPI {
           {
             headers: {
               'X-RestLi-Method': 'PARTIAL_UPDATE',
-              'LinkedIn-Version': '202506',
+              'LinkedIn-Version': LINKEDIN_API_VERSION,
               'X-Restli-Protocol-Version': '2.0.0'
             }
           }
