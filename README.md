@@ -1,205 +1,100 @@
-# LinkedIn Ads Manager
+<p align="center">
+  <img src=".github/assets/logo.jpg" width="96" alt="LinkedIn Ads Manager logo">
+</p>
 
-A modern web application for managing LinkedIn advertising campaigns with batch update capabilities.
+<h1 align="center">LinkedIn Ads Manager</h1>
+
+<p align="center">
+  Edit targeting, bids and budgets on dozens of LinkedIn campaigns at once, instead of one at a time.
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="DEPLOYMENT.md">Deployment</a>
+</p>
+
+<p align="center">
+  <img src=".github/assets/banner.jpg" alt="A campaign table with several rows selected and a batch update panel">
+</p>
+
+## Why
+
+LinkedIn's Campaign Manager edits campaigns one at a time. When you run 30 campaigns and need to exclude a new list of companies, raise every bid by 10%, or move budget around before month end, that becomes an afternoon of clicking the same fields over and over, with plenty of room for mistakes.
+
+This tool talks to the LinkedIn Marketing API directly and lets you select many campaigns, make one change, and apply it to all of them in a single batch.
 
 ## Features
 
-- **OAuth Authentication**: Secure LinkedIn OAuth 2.0 integration
-- **Campaign Overview**: View all your LinkedIn ad campaigns with status and budget information
-- **Real-time Status Monitoring**: See which campaigns are currently running
-- **Batch Updates**: Apply targeting exclusions to multiple campaigns simultaneously
-- **Targeting Management**: Exclude specific industries, job titles, companies, seniorities, and skills
-- **Search and Filter**: Find targeting options with typeahead search
-- **Modern UI**: Clean, responsive interface built with Tailwind CSS
+- **Campaign table.** Every campaign in an ad account with status, type, cost model, bid, daily and lifetime budget, and spend for any date range.
+- **Batch targeting.** Add or remove exclusions across selected campaigns: industries, job functions, titles, companies, seniorities, skills and more. Typeahead search over LinkedIn's targeting entities, plus bulk paste of comma-separated values.
+- **Common targeting view.** For a selection of campaigns, see which targeting criteria they all share and which differ before you change anything.
+- **Audience size check.** Estimate the audience for a targeting change before applying it.
+- **Batch bids and budgets.** Raise or lower bids and budgets by an amount or a percentage across the selection.
+- **Bid history.** Every bid change is logged with the spend at the time of the change, and charted over time, so you can see whether a bump actually moved delivery.
 
-## Prerequisites
+## Architecture
 
-- Node.js 18+ and npm
-- LinkedIn Developer Account
-- LinkedIn Marketing API access
-
-## Setup Instructions
-
-### 1. LinkedIn Developer Setup
-
-1. Go to [LinkedIn Developer Portal](https://developer.linkedin.com/)
-2. Create a new app or use an existing one
-3. Add the following redirect URLs to your app:
-   - `http://localhost:3000/api/auth/linkedin/callback` (for development)
-   - `https://yourdomain.com/api/auth/linkedin/callback` (for production)
-4. Request access to the LinkedIn Marketing API
-5. Note down your Client ID and Client Secret
-
-### 2. Environment Variables
-
-Create a `.env.local` file in the root directory with the following variables:
-
-```env
-LINKEDIN_CLIENT_ID=your_linkedin_client_id_here
-LINKEDIN_CLIENT_SECRET=your_linkedin_client_secret_here
+```mermaid
+flowchart LR
+    U[Browser<br/>React dashboard] -->|fetch| R[Next.js route handlers<br/>/api/*]
+    R -->|OAuth code exchange| O[LinkedIn OAuth 2.0]
+    R -->|REST, versioned headers| L[LinkedIn Marketing API<br/>adAccounts, adCampaigns,<br/>adTargetingEntities, adAnalytics]
+    O -->|access token| C[(HTTP-only cookie)]
+    C --> R
+    U --- LS[(localStorage<br/>entity name cache,<br/>bid history)]
 ```
 
-**Important**: Never commit these credentials to version control. The `.env.local` file is already included in `.gitignore`.
+**Thin server, typed client.** Next.js route handlers under `src/app/api` are the only code that holds the access token. They read it from an HTTP-only cookie set during the OAuth callback and call a single typed wrapper, `src/lib/linkedin-api.ts`, which handles versioned headers, pagination and URN encoding.
 
-### 3. Installation
+**Batch writes.** LinkedIn has no "update many campaigns" call. A batch is expanded into one `PARTIAL_UPDATE` per campaign, sent in sequence to stay inside rate limits, and the results are collected per campaign so a partial failure reports exactly which campaigns did not change.
 
-```bash
-# Install dependencies
+**Targeting diffs, not overwrites.** Campaign targeting is a nested include/exclude tree of URNs. Rather than replacing it, the batch builder reads each campaign's current tree, applies only the requested additions or removals, and writes back the merged result. That keeps each campaign's existing, different targeting intact.
+
+**URN to name resolution.** Targeting comes back as opaque URNs (`urn:li:organization:1234`). They are resolved to readable names in bulk and cached in the browser, so the table and the common-targeting view stay fast after the first load.
+
+**Serverless-friendly.** No database. Everything the server needs comes from the API on each request, and long-lived UI state (name cache, bid history) lives in the browser, so it deploys to any Node or serverless host.
+
+## Getting started
+
+You need a LinkedIn developer app with Marketing API access (`r_ads_reporting`, `rw_ads`).
+
+```sh
 npm install
-
-# Run the development server
-npm run dev
+npm run dev   # http://localhost:3000
 ```
 
-The application will be available at `http://localhost:3000`.
+Create `.env.local`:
 
-## Usage
+```sh
+LINKEDIN_CLIENT_ID=...
+LINKEDIN_CLIENT_SECRET=...
+```
 
-### Authentication
-1. Navigate to the application
-2. Click "Sign in with LinkedIn"
-3. Authorize the application to access your LinkedIn advertising data
+Add `http://localhost:3000/api/auth/linkedin/callback` to your LinkedIn app's authorized redirect URLs (the app derives the callback from its own origin), then sign in and pick an ad account. See [DEPLOYMENT.md](DEPLOYMENT.md) for production.
 
-### Viewing Campaigns
-1. Select an ad account from the dropdown
-2. View all campaigns with their status, type, and budget information
-3. Use the statistics cards to see totals and active campaigns
+## Project structure
 
-### Batch Updates
-1. Select campaigns using the checkboxes
-2. Click "Batch Update" button
-3. Search and select targeting criteria to exclude:
-   - Industries (e.g., "Computer Software")
-   - Job Functions (e.g., "Marketing")
-   - Job Titles (e.g., "Software Engineer")
-   - Companies (e.g., "Microsoft")
-   - Seniorities (e.g., "Entry level")
-   - Skills (e.g., "JavaScript")
-4. Click "Update Campaigns" to apply exclusions
-
-### Features in Detail
-
-#### Campaign List
-- **Status Indicators**: Color-coded status badges (Active, Paused, etc.)
-- **Selection**: Individual and bulk selection capabilities
-- **Campaign Information**: Name, ID, type, cost model, budget, and creation date
-
-#### Batch Update Modal
-- **Search Functionality**: Type-ahead search for targeting options
-- **Multiple Categories**: Support for various targeting facets
-- **Real-time Feedback**: Live count of selected exclusions
-- **Error Handling**: Clear error messages and validation
-
-## API Integration
-
-The application integrates with the LinkedIn Marketing API using the following endpoints:
-
-- **Campaigns**: `/rest/campaigns` - Fetch campaign data
-- **Ad Accounts**: `/rest/adAccounts` - Fetch advertiser accounts
-- **Targeting Facets**: `/rest/adTargetingFacets` - Get available targeting options
-- **Targeting Entities**: `/rest/adTargetingEntities` - Search targeting values
-
-## Technical Architecture
-
-### Frontend
-- **Next.js 14**: React framework with App Router
-- **TypeScript**: Type-safe development
-- **Tailwind CSS**: Utility-first CSS framework
-- **Client-side State**: React hooks for state management
-
-### Backend
-- **Next.js API Routes**: Server-side API endpoints
-- **Cookie-based Auth**: Secure token storage
-- **LinkedIn API Client**: Custom API wrapper class
-
-### Security
-- **OAuth 2.0**: Standard LinkedIn authentication flow
-- **CSRF Protection**: State parameter validation
-- **HTTP-only Cookies**: Secure token storage
-- **Environment Variables**: Secure credential management
-
-## Development
-
-### Project Structure
 ```
 src/
-├── app/                    # Next.js App Router pages
-│   ├── api/               # API routes
-│   ├── dashboard/         # Dashboard page
-│   └── page.tsx          # Home/login page
-├── components/            # React components
-│   ├── BatchUpdateModal.tsx
-│   └── CampaignList.tsx
-├── lib/                   # Utility libraries
-│   └── linkedin-api.ts   # LinkedIn API client
-└── types/                 # TypeScript definitions
-    └── linkedin.ts       # LinkedIn API types
+  app/
+    api/auth/linkedin/      OAuth start + callback
+    api/accounts/           ad accounts
+    api/campaigns/          list, spend, common-targeting, batch-update,
+                            batch-bid-update, batch-budget-update, bid-history
+    api/targeting/          entity search, name resolution, audience counts
+    dashboard/              main UI
+  components/               CampaignList, BatchUpdateModal, BulkBidAdjustmentModal,
+                            BidHistoryGraph, DateRangeFilter
+  lib/                      LinkedIn API client, caches, date ranges
+  types/                    LinkedIn API types
 ```
 
-### Adding New Features
+## Tech stack
 
-1. **New Targeting Facets**: Add to `TARGETING_FACETS` in `BatchUpdateModal.tsx`
-2. **Campaign Filters**: Extend the `CampaignList` component
-3. **Additional APIs**: Add new routes in `src/app/api/`
+Next.js (App Router), React, TypeScript, Tailwind CSS, Recharts, LinkedIn Marketing API.
 
-## Troubleshooting
+## Notes
 
-### Common Issues
-
-1. **Authentication Errors**
-   - Verify LinkedIn app credentials
-   - Check redirect URL configuration
-   - Ensure Marketing API access is approved
-
-2. **API Rate Limits**
-   - LinkedIn has rate limits on API calls
-   - The app includes error handling for rate limit responses
-
-3. **Campaign Updates Failing**
-   - Verify you have write permissions for the ad account
-   - Check that campaigns are not archived or completed
-   - Some targeting changes may not be allowed for active campaigns
-
-### Debug Mode
-Set `NODE_ENV=development` to see detailed error messages and API responses in the browser console.
-
-## Deployment
-
-### Production Environment Variables
-```env
-LINKEDIN_CLIENT_ID=your_production_client_id
-LINKEDIN_CLIENT_SECRET=your_production_client_secret
-```
-
-### Deployment Platforms
-- **Vercel**: Automatic deployment from Git
-- **Netlify**: Static site with serverless functions
-- **AWS/Google Cloud**: Container or serverless deployment
-
-Make sure to:
-1. Update redirect URLs in LinkedIn app settings
-2. Set production environment variables
-3. Configure HTTPS for production use
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License.
-
-## Support
-
-For issues related to:
-- **LinkedIn API**: Check [LinkedIn Developer Documentation](https://docs.microsoft.com/en-us/linkedin/marketing/)
-- **Application Bugs**: Create an issue in this repository
-- **Feature Requests**: Submit a pull request or create an issue
-
----
-
-**Note**: This application requires LinkedIn Marketing API access, which must be approved by LinkedIn. Make sure you have the necessary permissions before using this tool.
+The API version is pinned in `src/lib/linkedin-api.ts`. LinkedIn retires versions about a year after release, so bump it when calls start returning 426. Not affiliated with LinkedIn.
